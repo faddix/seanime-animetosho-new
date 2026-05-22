@@ -31,60 +31,49 @@ interface AnimeToshoTorrent {
 }
 
 class Provider {
-    private apiUrl = "https://feed.animetosho.xyz/api"
+    private jsonFeedUrl = "https://feed.animetosho.xyz/json/v1"
 
     public getSettings(): AnimeProviderSettings {
         return {
             type: "main",
             canSmartSearch: true,
             smartSearchFilters: ["batch", "episodeNumber", "resolution"],
-            supportsAdult: true,
+            supportsAdult: false,
         }
     }
 
-    private getApiUrl() {
-        let url = $getUserPreference("apiUrl") || this.apiUrl
+    private getJsonFeedUrl() {
+        let url = $getUserPreference("jsonUrl") || this.jsonFeedUrl
         if (url.endsWith("/")) url = url.slice(0, -1)
         if (!url.startsWith("http")) url = "https://" + url
         return url
     }
 
-    private getApiKey() {
-        return $getUserPreference("apiKey") || ""
-    }
-
-    private buildApiUrl(params: { [key: string]: string }) {
-        const baseUrl = this.getApiUrl()
-        const query: string[] = []
-        for (const [key, value] of Object.entries(params)) {
-            query.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
-        }
-        return query.length > 0 ? `${baseUrl}?${query.join("&")}` : baseUrl
-    }
-
     public async getLatest(): Promise<AnimeTorrent[]> {
         try {
-            console.log("AnimeTosho: Fetching latest torrents")
-            const url = this.buildApiUrl({ q: "" })
+            console.log("AnimeTosho (NEW): Fetching latest torrents")
+            const base = this.getJsonFeedUrl()
+            const url = `${base}/releases?limit=100`
             const torrents = await this.fetchTorrents(url)
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, null)
         }
         catch (error) {
-            console.error("AnimeTosho: Error fetching latest: " + (error as Error).message)
+            console.error("AnimeTosho (NEW): Error fetching latest: " + (error as Error).message)
             return []
         }
     }
 
     public async search(options: AnimeSearchOptions): Promise<AnimeTorrent[]> {
         try {
-            console.log(`AnimeTosho: Searching for "${options.query}"`)
-            const query = this.sanitizeTitle(options.query)
-            const url = this.buildApiUrl({ q: query })
+            const q = this.sanitizeTitle(options.query)
+            console.log(`AnimeTosho (NEW): Searching for "${q}"`)
+            const base = this.getJsonFeedUrl()
+            const url = `${base}/search?q=${encodeURIComponent(q)}&limit=100`
             const torrents = await this.fetchTorrents(url)
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, options.media)
         }
         catch (error) {
-            console.error("AnimeTosho: Error searching: " + (error as Error).message)
+            console.error("AnimeTosho (NEW): Error searching: " + (error as Error).message)
             return []
         }
     }
@@ -92,14 +81,14 @@ class Provider {
     public async smartSearch(options: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
         try {
             if (options.batch) {
-                console.log("AnimeTosho: Smart searching for batches...")
+                console.log("AnimeTosho (NEW): Smart searching for batches...")
                 return this.smartSearchBatch(options)
             }
-            console.log(`AnimeTosho: Smart searching for episode ${options.episodeNumber}...`)
+            console.log(`AnimeTosho (NEW): Smart searching for episode ${options.episodeNumber}...`)
             return this.smartSearchSingleEpisode(options)
         }
         catch (error) {
-            console.error("AnimeTosho: Error in smart search: " + (error as Error).message)
+            console.error("AnimeTosho (NEW): Error in smart search: " + (error as Error).message)
             return []
         }
     }
@@ -112,7 +101,7 @@ class Provider {
         const isMovieOrSingle = media.format === "MOVIE" || media.episodeCount === 1
 
         if (options.anidbAID && options.anidbAID > 0) {
-            console.log(`AnimeTosho: Searching batches by AID ${options.anidbAID}`)
+            console.log(`AnimeTosho (NEW): Searching batches by AID ${options.anidbAID}`)
             try {
                 const torrents = await this.searchByAID(options.anidbAID, options.resolution || "")
 
@@ -131,22 +120,23 @@ class Provider {
                 }
             }
             catch (e) {
-                console.warn("AnimeTosho: searchByAID failed: " + (e as Error).message)
+                console.warn("AnimeTosho (NEW): searchByAID failed: " + (e as Error).message)
             }
         }
 
         if (foundByID) {
-            console.log(`AnimeTosho: Found ${atTorrents.length} batches by AID`)
+            console.log(`AnimeTosho (NEW): Found ${atTorrents.length} batches by AID`)
             return this.torrentSliceToAnimeTorrentSlice(atTorrents, true, media)
         }
 
         // Fallback: Search by query
-        console.log("AnimeTosho: Searching batches by query")
+        console.log("AnimeTosho (NEW): Searching batches by query (JSON)")
         const queries = this.buildSmartSearchQueries(options)
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            const url = this.buildApiUrl({ only_tor: "1", q: query, order: "size-d" })
+            const base = this.getJsonFeedUrl()
+            const url = `${base}/search?q=${encodeURIComponent(query)}&limit=100&only_tor=1&order=size-d`
             return this.fetchTorrents(url)
         })
 
@@ -155,7 +145,7 @@ class Provider {
             allTorrents = results.flat()
         }
         catch (error) {
-            console.error("AnimeTosho: Batch query search failed: " + (error as Error).message)
+            console.error("AnimeTosho (NEW): Batch query search failed: " + (error as Error).message)
             return []
         }
 
@@ -166,7 +156,7 @@ class Provider {
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
         const uniqueTorrents = [...new Map(animeTorrents.map(t => [t.link, t])).values()]
 
-        console.log(`AnimeTosho: Found ${uniqueTorrents.length} batches by query`)
+        console.log(`AnimeTosho (NEW): Found ${uniqueTorrents.length} batches by query`)
         return uniqueTorrents
     }
 
@@ -178,7 +168,7 @@ class Provider {
         const isMovieOrSingle = media.format === "MOVIE" || media.episodeCount === 1
 
         if (options.anidbEID && options.anidbEID > 0) {
-            console.log(`AnimeTosho: Searching episode by EID ${options.anidbEID}`)
+            console.log(`AnimeTosho (NEW): Searching episode by EID ${options.anidbEID}`)
             try {
                 const torrents = await this.searchByEID(options.anidbEID, options.resolution || "")
                 // Filter for single-file torrents
@@ -189,22 +179,23 @@ class Provider {
                 }
             }
             catch (e) {
-                console.warn("AnimeTosho: searchByEID failed: " + (e as Error).message)
+                console.warn("AnimeTosho (NEW): searchByEID failed: " + (e as Error).message)
             }
         }
 
         if (foundByID) {
-            console.log(`AnimeTosho: Found ${atTorrents.length} episodes by EID`)
+            console.log(`AnimeTosho (NEW): Found ${atTorrents.length} episodes by EID`)
             return this.torrentSliceToAnimeTorrentSlice(atTorrents, true, media)
         }
 
         // Fallback: Search by query
-        console.log("AnimeTosho: Searching episode by query")
+        console.log("AnimeTosho (NEW): Searching episode by query (JSON)")
         const queries = this.buildSmartSearchQueries(options)
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            const url = this.buildApiUrl({ only_tor: "1", q: query, qx: "1" })
+            const base = this.getJsonFeedUrl()
+            const url = `${base}/search?q=${encodeURIComponent(query)}&limit=100&only_tor=1&qx=1`
             return this.fetchTorrents(url)
         })
 
@@ -213,7 +204,7 @@ class Provider {
             allTorrents = results.flat()
         }
         catch (error) {
-            console.error("AnimeTosho: Episode query search failed: " + (error as Error).message)
+            console.error("AnimeTosho (NEW): Episode query search failed: " + (error as Error).message)
             return []
         }
 
@@ -224,7 +215,7 @@ class Provider {
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
         const uniqueTorrents = [...new Map(animeTorrents.map(t => [t.link, t])).values()]
 
-        console.log(`AnimeTosho: Found ${uniqueTorrents.length} episodes by query`)
+        console.log(`AnimeTosho (NEW): Found ${uniqueTorrents.length} episodes by query`)
         return uniqueTorrents
     }
 
@@ -243,138 +234,101 @@ class Provider {
     //+ --------------------------------------------------------------------------------------------------
 
     private async fetchTorrents(url: string): Promise<AnimeToshoTorrent[]> {
-        console.log(`AnimeTosho: Fetching from ${url}`)
+        console.log(`AnimeTosho (NEW): Fetching from ${url}`)
+        const headers: any = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
 
-        const requestOptions: any = {}
-        const apiKey = this.getApiKey()
-        if (apiKey) {
-            requestOptions.headers = {
-                "X-API-Key": apiKey,
-                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+        const res = await fetch(url, { headers })
+        if (!res.ok) throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
+
+        // Try to detect JSON content
+        const contentType = this.getHeader(res, "content-type") ?? ""
+        if (contentType.includes('application/json') || url.includes('/json/')) {
+            const obj = await res.json()
+            // Normalize to array of results
+            let items: any[] = []
+            if (!obj) items = []
+            else if (Array.isArray(obj)) items = obj
+            else if (obj.data) {
+                if (Array.isArray(obj.data)) items = obj.data
+                else if (Array.isArray((obj.data as any).results)) items = (obj.data as any).results
+                else if (Array.isArray((obj.data as any).results || obj.data)) items = (obj.data as any).results || obj.data
             }
-        }
+            else if (Array.isArray(obj.results)) items = obj.results
+            else items = []
 
-        const res = await fetch(url, requestOptions)
-        if (!res.ok) {
-            throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
-        }
-
-        const text = res.text()
-        const torrents = this.parseRssFeed(text)
-        
-
-        // Clean up impossibly high seeder/leecher counts
-        return torrents.map(t => {
-            if (t.seeders > 100000) t.seeders = 0
-            if (t.leechers > 100000) t.leechers = 0
-            return t
-        })
-    }
-
-    private parseRssFeed(xmlText: string): AnimeToshoTorrent[] {
-        const decodeHtmlEntities = (value: string) => {
-            return value.replace(/&(#?(?:x[0-9A-Fa-f]+|\d+));/g, (match, code) => {
-                if (code.startsWith("#x") || code.startsWith("#X")) {
-                    return String.fromCharCode(parseInt(code.slice(2), 16))
+            const mapped: AnimeToshoTorrent[] = items.map((r: any, idx: number) => {
+                const id = r.id || r.nyaa_id || (r.nyaa_id === 0 ? 0 : (idx + 1))
+                const title = r.title || r.name || ""
+                const link = r.urls && r.urls.length ? r.urls[0] : (r.link || r.source_url || "")
+                const torrent_url = r.torrent_url || r.download || r.nzb_url || r.torrent || ""
+                const info_hash = (r.info_hash || r.infohash || r.hash || "")
+                const magnet_uri = r.magnet || r.magnet_uri || r.magnet_url || ""
+                const seeders = Number(r.seeders || r.seeder || 0)
+                const leechers = Number(r.leechers || r.leecher || 0)
+                const total_size = Number(r.size_bytes || r.total_size || r.size || 0)
+                const num_files = Number(r.num_files || 1)
+                let timestamp = 0
+                const dateStr = r.date_added || r.updated_at || r.pubDate || r.timestamp
+                if (dateStr) {
+                    const parsed = Date.parse(dateStr)
+                    timestamp = Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)
                 }
-                if (code.startsWith("#")) {
-                    return String.fromCharCode(parseInt(code.slice(1), 10))
+
+                return {
+                    id: Number(id || idx + 1),
+                    title: String(title),
+                    link: String(link || ""),
+                    timestamp: Number(timestamp || 0),
+                    status: String(r.status || ""),
+                    tosho_id: r.tosho_id || 0,
+                    nyaa_id: r.nyaa_id || 0,
+                    nyaa_subdom: r.nyaa_subdom || null,
+                    anidex_id: r.anidex_id || 0,
+                    torrent_url: String(torrent_url || ""),
+                    info_hash: String(info_hash || ""),
+                    info_hash_v2: r.info_hash_v2 || "",
+                    magnet_uri: String(magnet_uri || ""),
+                    seeders: seeders || 0,
+                    leechers: leechers || 0,
+                    torrent_download_count: Number(r.downloads || r.torrent_download_count || 0),
+                    tracker_updated: r.tracker_updated || null,
+                    nzb_url: r.nzb_url || "",
+                    total_size: total_size || 0,
+                    num_files: num_files || 1,
+                    anidb_aid: r.anidb_aid || 0,
+                    anidb_eid: r.anidb_eid || 0,
+                    anidb_fid: r.anidb_fid || 0,
+                    article_url: r.article_url || link || "",
+                    article_title: r.article_title || title || "",
+                    website_url: r.website_url || r.source || "",
                 }
-                switch (code.toLowerCase()) {
-                    case "amp": return "&"
-                    case "lt": return "<"
-                    case "gt": return ">"
-                    case "quot": return '"'
-                    case "apos": return "'"
-                    default: return match
-                }
+            })
+
+            // Sanity clamp seeders/leechers
+            return mapped.map(t => {
+                if (t.seeders > 100000) t.seeders = 0
+                if (t.leechers > 100000) t.leechers = 0
+                return t
             })
         }
 
-        const getTagText = (text: string, tag: string) => {
-            const re = new RegExp("<" + tag + "[^>]*>([\\s\\S]*?)<\\/" + tag + ">", "i")
-            const match = text.match(re)
-            let value = match ? match[1].trim() : ""
-            if (value.startsWith("<![CDATA[")) {
-                value = value.slice(9, value.endsWith("]]>") ? -3 : undefined)
-            }
-            return decodeHtmlEntities(value.trim())
-        }
-
-        const getAttributeValue = (text: string, tagName: string, attrName: string, attrValue: string, returnAttr: string) => {
-            const re = new RegExp("<" + tagName + "[^>]*" + attrName + "=(?:\"|\')" + attrValue + "(?:\"|\')[^>]*" + returnAttr + "=(?:\"|\')([^\"\']*)(?:\"|\')[^>]*>", "i")
-            const match = text.match(re)
-            return match ? decodeHtmlEntities(match[1]) : ""
-        }
-
-        const getSingleAttrValue = (text: string, tagName: string, attrName: string) => {
-            const re = new RegExp("<" + tagName + "[^>]*" + attrName + "=(?:\"|\')([^\"\']*)(?:\"|\')[^>]*>", "i")
-            const match = text.match(re)
-            return match ? decodeHtmlEntities(match[1]) : ""
-        }
-
-        const itemRegex = /<item[^>]*>([\s\S]*?)<\/item>/gi
-        const results: AnimeToshoTorrent[] = []
-        let match: RegExpExecArray | null
-        let index = 0
-
-        while ((match = itemRegex.exec(xmlText)) !== null) {
-            const itemText = match[1]
-            const title = getTagText(itemText, "title") || getTagText(itemText, "description")
-            const link = getTagText(itemText, "link")
-            const pubDate = getTagText(itemText, "pubDate")
-            const torrentUrl = getSingleAttrValue(itemText, "enclosure", "url")
-            const sourceUrl = getSingleAttrValue(itemText, "source", "url")
-            const magnetUri = getAttributeValue(itemText, "torznab:attr", "name", "magneturl", "value") || getAttributeValue(itemText, "newznab:attr", "name", "magneturl", "value")
-            const infoHash = getAttributeValue(itemText, "torznab:attr", "name", "infohash", "value") || getAttributeValue(itemText, "newznab:attr", "name", "infohash", "value")
-            const totalSize = parseInt(getAttributeValue(itemText, "torznab:attr", "name", "size", "value") || getAttributeValue(itemText, "newznab:attr", "name", "size", "value") || "0", 10)
-            const seeders = parseInt(getAttributeValue(itemText, "torznab:attr", "name", "seeders", "value") || getAttributeValue(itemText, "newznab:attr", "name", "seeders", "value") || "0", 10)
-            const leechers = parseInt(getAttributeValue(itemText, "torznab:attr", "name", "leechers", "value") || getAttributeValue(itemText, "newznab:attr", "name", "leechers", "value") || "0", 10)
-            let timestamp = 0
-            if (pubDate) {
-                const parsed = Date.parse(pubDate)
-                timestamp = Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)
-            }
-            const id = parseInt((link || "").split("/").pop() || String(index + 1), 10) || index + 1
-
-            results.push({
-                id,
-                title,
-                link,
-                timestamp,
-                status: "",
-                torrent_url: torrentUrl,
-                info_hash: infoHash,
-                magnet_uri: magnetUri,
-                seeders,
-                leechers,
-                torrent_download_count: 0,
-                tracker_updated: null,
-                nzb_url: "",
-                total_size: totalSize,
-                num_files: 1,
-                anidb_aid: 0,
-                anidb_eid: 0,
-                anidb_fid: 0,
-                article_url: link,
-                article_title: title,
-                website_url: sourceUrl,
-            })
-
-            index += 1
-        }
-
-        return results
+        // If we expected JSON but got something else, log a warning and return empty
+        console.warn('AnimeTosho (NEW): Non-JSON response received. Skipping...')
+        return []
     }
 
     private searchByAID(aid: number, quality: string): Promise<AnimeToshoTorrent[]> {
         const q = this.formatQuality(quality)
-        return this.fetchTorrents(this.buildApiUrl({ order: "size-d", aid: String(aid), q }))
+        const base = this.getJsonFeedUrl()
+        const url = `${base}/releases?aid=${encodeURIComponent(String(aid))}&q=${encodeURIComponent(q)}&order=size-d&limit=100`
+        return this.fetchTorrents(url)
     }
 
     private searchByEID(eid: number, quality: string): Promise<AnimeToshoTorrent[]> {
         const q = this.formatQuality(quality)
-        return this.fetchTorrents(this.buildApiUrl({ eid: String(eid), q }))
+        const base = this.getJsonFeedUrl()
+        const url = `${base}/releases?eid=${encodeURIComponent(String(eid))}&q=${encodeURIComponent(q)}&limit=100`
+        return this.fetchTorrents(url)
     }
 
     private buildSmartSearchQueries(opts: AnimeSmartSearchOptions): string[] {
@@ -601,7 +555,7 @@ class Provider {
         const metadata = $habari.parse(t.title)
 
         // Convert UNIX timestamp to ISO string
-        const formattedDate = new Date(t.timestamp * 1000).toISOString()
+        const formattedDate = t.timestamp ? new Date(t.timestamp * 1000).toISOString() : new Date(0).toISOString()
 
         const isBatch = t.num_files > 1
         let episode = -1
@@ -637,7 +591,7 @@ class Provider {
             episodeNumber: episode,
             releaseGroup: metadata.release_group || "",
             isBestRelease: false,
-            confirmed: false,     // Will be set in torrentSliceToAnimeTorrentSlice
+            confirmed: false, // Will be set in torrentSliceToAnimeTorrentSlice
         }
     }
 
@@ -647,5 +601,13 @@ class Provider {
         const sizes = ["Bytes", "KiB", "MiB", "GiB", "TiB"]
         const i = Math.floor(Math.log(bytes) / Math.log(k))
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
+    }
+
+    private getHeader(res: any, name: string): string | undefined {
+        if (!res || !res.headers) return undefined;
+        const h: any = res.headers;
+        if (typeof h.get === "function") return h.get(name);
+        // header names may be lowercase or as properties
+        return h[name] ?? h[name.toLowerCase()];
     }
 }
