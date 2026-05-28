@@ -2,32 +2,37 @@
 /// <reference path="./core.d.ts" />
 
 interface AnimeToshoTorrent {
+    date_added: string;
+    ddl_mirrors: Array<{ label?: string; provider?: string; url?: string }>;
+    downloads: number;
     id: number;
-    title: string;
-    link: string;
-    timestamp: number;
-    status: string;
-    tosho_id?: number;
-    nyaa_id?: number;
-    nyaa_subdom?: any;
-    anidex_id?: number;
-    torrent_url: string;
     info_hash: string;
-    info_hash_v2?: string;
-    magnet_uri: string;
-    seeders: number;
+    is_multisub_release: boolean;
     leechers: number;
-    torrent_download_count: number;
-    tracker_updated?: any;
-    nzb_url?: string;
-    total_size: number;
-    num_files: number;
-    anidb_aid: number;
-    anidb_eid: number;
-    anidb_fid: number;
-    article_url: string;
-    article_title: string;
-    website_url: string;
+    magnet: string;
+    metadata_fetched: boolean;
+    nyaa_id?: number;
+    nzb_url: string | null;
+    release_group: string;
+    resolution: string;
+    seeders: number;
+    series: {
+        anidb_aid: number;
+        anidb_eid: number;
+        anidb_gid: number | null;
+        episode_number: number;
+        key: string;
+        title: string;
+    };
+    size_bytes: number;
+    source: string;
+    source_id: string | number;
+    source_label: string;
+    title: string;
+    torrent_url: string;
+    updated_at: string;
+    urls: { source: string; view: string };
+    num_files?: number;
 }
 
 class Provider {
@@ -110,7 +115,7 @@ class Provider {
                     atTorrents = torrents
                 } else {
                     // Otherwise, filter for actual batches (multi-file)
-                    const batchTorrents = torrents.filter(t => t.num_files > 1)
+                    const batchTorrents = torrents.filter(t => (t.num_files ?? 1) > 1)
                     // If we found batches, use them. If not, use all torrents (e.g., for OVAs released as single files)
                     atTorrents = batchTorrents.length > 0 ? batchTorrents : torrents
                 }
@@ -151,7 +156,7 @@ class Provider {
         }
 
         // Filter out single-file torrents unless it's a movie/single-ep
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || t.num_files > 1)
+        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.num_files ?? 1) > 1)
         allTorrents = this.filterByQuery(allTorrents, options.query)
 
         // Convert and remove duplicates
@@ -174,7 +179,7 @@ class Provider {
             try {
                 const torrents = await this.searchByEID(options.anidbEID, options.resolution || "")
                 // Filter for single-file torrents
-                atTorrents = torrents.filter(t => t.num_files === 1)
+                atTorrents = torrents.filter(t => (t.num_files ?? 1) === 1)
 
                 if (atTorrents.length > 0) {
                     foundByID = true
@@ -212,7 +217,7 @@ class Provider {
         }
 
         // Filter for single-file torrents, unless it's a movie (which might be multi-file)
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || t.num_files === 1)
+        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.num_files ?? 1) === 1)
         allTorrents = this.filterByQuery(allTorrents, options.query)
 
         // Convert and remove duplicates
@@ -239,86 +244,20 @@ class Provider {
 
     private async fetchTorrents(url: string): Promise<AnimeToshoTorrent[]> {
         console.log(`AnimeTosho (NEW): Fetching from ${url}`)
-        const headers: any = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }
 
-        const res = await fetch(url, { headers })
+        const res = await fetch(url)
         if (!res.ok) throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
 
-        // Try to detect JSON content
-        const contentType = this.getHeader(res, "content-type") ?? ""
-        if (contentType.includes('application/json') || url.includes('/json/')) {
-            const obj = await res.json()
-            // Normalize to array of results
-            let items: any[] = []
-            if (!obj) items = []
-            else if (Array.isArray(obj)) items = obj
-            else if (obj.data) {
-                if (Array.isArray(obj.data)) items = obj.data
-                else if (Array.isArray((obj.data as any).results)) items = (obj.data as any).results
-                else if (Array.isArray((obj.data as any).results || obj.data)) items = (obj.data as any).results || obj.data
-            }
-            else if (Array.isArray(obj.results)) items = obj.results
-            else items = []
+        const response = res.json() as any
 
-            const mapped: AnimeToshoTorrent[] = items.map((r: any, idx: number) => {
-                const id = r.id || r.nyaa_id || (r.nyaa_id === 0 ? 0 : (idx + 1))
-                const title = r.title || r.name || ""
-                const link = r.urls && r.urls.length ? r.urls[0] : (r.link || r.source_url || "")
-                const torrent_url = r.torrent_url || r.download || r.nzb_url || r.torrent || ""
-                const info_hash = (r.info_hash || r.infohash || r.hash || "")
-                const magnet_uri = r.magnet || r.magnet_uri || r.magnet_url || ""
-                const seeders = Number(r.seeders || r.seeder || 0)
-                const leechers = Number(r.leechers || r.leecher || 0)
-                const total_size = Number(r.size_bytes || r.total_size || r.size || 0)
-                const num_files = Number(r.num_files || 1)
-                let timestamp = 0
-                const dateStr = r.date_added || r.updated_at || r.pubDate || r.timestamp
-                if (dateStr) {
-                    const parsed = Date.parse(dateStr)
-                    timestamp = Number.isNaN(parsed) ? 0 : Math.floor(parsed / 1000)
-                }
+        const torrents = response.data as AnimeToshoTorrent[]
 
-                return {
-                    id: Number(id || idx + 1),
-                    title: String(title),
-                    link: String(link || ""),
-                    timestamp: Number(timestamp || 0),
-                    status: String(r.status || ""),
-                    tosho_id: r.tosho_id || 0,
-                    nyaa_id: r.nyaa_id || 0,
-                    nyaa_subdom: r.nyaa_subdom || null,
-                    anidex_id: r.anidex_id || 0,
-                    torrent_url: String(torrent_url || ""),
-                    info_hash: String(info_hash || ""),
-                    info_hash_v2: r.info_hash_v2 || "",
-                    magnet_uri: String(magnet_uri || ""),
-                    seeders: seeders || 0,
-                    leechers: leechers || 0,
-                    torrent_download_count: Number(r.downloads || r.torrent_download_count || 0),
-                    tracker_updated: r.tracker_updated || null,
-                    nzb_url: r.nzb_url || "",
-                    total_size: total_size || 0,
-                    num_files: num_files || 1,
-                    anidb_aid: r.anidb_aid || 0,
-                    anidb_eid: r.anidb_eid || 0,
-                    anidb_fid: r.anidb_fid || 0,
-                    article_url: r.article_url || link || "",
-                    article_title: r.article_title || title || "",
-                    website_url: r.website_url || r.source || "",
-                }
-            })
-
-            // Sanity clamp seeders/leechers
-            return mapped.map(t => {
-                if (t.seeders > 100000) t.seeders = 0
-                if (t.leechers > 100000) t.leechers = 0
-                return t
-            })
-        }
-
-        // If we expected JSON but got something else, log a warning and return empty
-        console.warn('AnimeTosho (NEW): Non-JSON response received. Skipping...')
-        return []
+        // Clean up impossibly high seeder/leecher counts
+        return torrents.map(t => {
+            if (t.seeders > 100000) t.seeders = 0
+            if (t.leechers > 100000) t.leechers = 0
+            return t
+        })
     }
 
     private searchByAID(aid: number, quality: string): Promise<AnimeToshoTorrent[]> {
@@ -343,10 +282,9 @@ class Provider {
         const tokens = normalized.split(/\s+/).filter(Boolean)
         return torrents.filter(t => {
             const haystack = [
+                t.series.title,
+                t.series.key,
                 t.title,
-                t.article_title,
-                t.website_url,
-                t.link,
                 t.torrent_url,
             ].filter(Boolean).join(" ").toLowerCase()
             return tokens.every(token => haystack.includes(token))
@@ -574,12 +512,11 @@ class Provider {
     }
 
     private toAnimeTorrent(t: AnimeToshoTorrent, media: AnimeSmartSearchOptions["media"] | null): AnimeTorrent {
-        const metadata = $habari.parse(t.title)
+        const metadata = $habari.parse(t.series.title)
 
-        // Convert UNIX timestamp to ISO string
-        const formattedDate = t.timestamp ? new Date(t.timestamp * 1000).toISOString() : new Date(0).toISOString()
+        const formattedDate = t.date_added || new Date(0).toISOString()
 
-        const isBatch = t.num_files > 1
+        const isBatch = (t.num_files ?? 1) > 1
         let episode = -1
 
         if (metadata.episode_number && metadata.episode_number.length === 1) {
@@ -597,21 +534,21 @@ class Provider {
         }
 
         return {
-            name: t.title,
+            name: t.series.title,
             date: formattedDate,
-            size: t.total_size,
-            formattedSize: this.bytesToHuman(t.total_size),
+            size: t.size_bytes,
+            formattedSize: this.bytesToHuman(t.size_bytes),
             seeders: t.seeders,
             leechers: t.leechers,
-            downloadCount: t.torrent_download_count,
-            link: t.link,
+            downloadCount: t.downloads,
+            link: t.urls.view,
             downloadUrl: t.torrent_url,
-            magnetLink: t.magnet_uri,
+            magnetLink: t.magnet,
             infoHash: t.info_hash,
-            resolution: metadata.video_resolution || "",
+            resolution: metadata.video_resolution || t.resolution || "",
             isBatch: isBatch,
             episodeNumber: episode,
-            releaseGroup: metadata.release_group || "",
+            releaseGroup: metadata.release_group || t.release_group || "",
             isBestRelease: false,
             confirmed: false, // Will be set in torrentSliceToAnimeTorrentSlice
         }
@@ -623,13 +560,5 @@ class Provider {
         const sizes = ["Bytes", "KiB", "MiB", "GiB", "TiB"]
         const i = Math.floor(Math.log(bytes) / Math.log(k))
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i]
-    }
-
-    private getHeader(res: any, name: string): string | undefined {
-        if (!res || !res.headers) return undefined;
-        const h: any = res.headers;
-        if (typeof h.get === "function") return h.get(name);
-        // header names may be lowercase or as properties
-        return h[name] ?? h[name.toLowerCase()];
     }
 }
