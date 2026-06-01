@@ -116,7 +116,9 @@ class Provider {
                     atTorrents = torrents
                 } else {
                     // Otherwise, filter for actual batches (multi-file)
-                    const batchTorrents = torrents.filter(t => (t.file_count ?? 1) > 1 || t.is_batch || /batch|complete|full|pack|~/i.test(t.title))
+                    // Also include titles that don't contain episode markers.
+                    const batchTorrents = torrents.filter(t => (t.file_count ?? 1) > 1 || t.is_batch || /batch|complete|full|pack|~|season/i.test(t.title) || !/(?:(?:S\d{1,2}E\d{1,3}(?:v\d+)?|S\d{1,2}x\d{1,3}(?:v\d+)?|EP?\.?\s*\d{1,3}(?:v\d+)?|E\d{1,3}(?:v\d+)?|episode)\b|-\s*\d{1,3}\b)/i.test(t.title))
+
                     // If we found batches, use them. If not, use all torrents (e.g., for OVAs released as single files)
                     if (batchTorrents.length == 0) console.log("AnimeTosho (NEW): No batches found by AID, falling back to all releases for this AID")
                     atTorrents = batchTorrents.length > 0 ? batchTorrents : torrents
@@ -156,8 +158,9 @@ class Provider {
             return []
         }
 
-        // Filter out single-file torrents unless it's a movie/single-ep
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.file_count ?? 1) > 1 || t.is_batch || /batch|complete|full|pack|~/i.test(t.title))
+        // Filter out single-file torrents unless it's a movie/single-ep.
+        // Also include titles that don't contain episode markers.
+        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.file_count ?? 1) > 1 || t.is_batch || /batch|complete|full|pack|~|season/i.test(t.title) || !/(?:(?:S\d{1,2}E\d{1,3}(?:v\d+)?|S\d{1,2}x\d{1,3}(?:v\d+)?|EP?\.?\s*\d{1,3}(?:v\d+)?|E\d{1,3}(?:v\d+)?|episode)\b|-\s*\d{1,3}\b)/i.test(t.title))
 
         // Convert and remove duplicates
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
@@ -422,6 +425,7 @@ class Provider {
             `"+ Specials"`,
             `"+ Special"`,
             `"Seasons"`,
+            `"Season"`,
             `"Parts"`,
         ]
         return `(${parts.join("|")})`
