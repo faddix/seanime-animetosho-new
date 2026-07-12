@@ -2,42 +2,38 @@
 /// <reference path="./core.d.ts" />
 
 interface AnimeToshoTorrent {
-    date_added: string;
-    ddl_mirrors: Array<{ label?: string; provider?: string; url?: string }>;
-    downloads: number;
-    file_count: number;
+    anidb_aid: number;
+    anidb_eid: number;
+    anidb_fid: number | null;
+    anidex_id: number | null;
+    article_title: string;
+    article_url: string;
     id: number;
     info_hash: string;
-    is_batch: boolean;
-    is_multisub_release: boolean;
+    info_hash_v2: string | null;
     leechers: number;
-    magnet: string;
-    metadata_fetched: boolean;
-    nyaa_id?: number;
+    link: string;
+    magnet_uri: string;
+    nekobt_id: number | null;
+    num_files: number;
+    nyaa_id: number;
+    nyaa_subdom: string | null;
     nzb_url: string | null;
-    release_group: string;
-    resolution: string;
     seeders: number;
-    series: {
-        anidb_aid: number;
-        anidb_eid: number;
-        anidb_gid: number | null;
-        episode_number: number;
-        key: string;
-        title: string;
-    };
-    size_bytes: number;
-    source: string;
-    source_id: string | number;
-    source_label: string;
+    status: string;
+    timestamp: number;
     title: string;
+    torrent_downloaded_count: number;
+    torrent_name: string;
     torrent_url: string;
-    updated_at: string;
-    urls: { source: string; view: string };
+    tosho_id: number | null;
+    total_size: number;
+    tracker_updated: number;
+    website_url: string | null;
 }
 
 class Provider {
-    private jsonFeedUrl = "https://feed.animetosho.xyz/json/v1"
+    private jsonFeedUrl = "https://animetosho.xyz/feed/json"
 
     public getSettings(): AnimeProviderSettings {
         return {
@@ -55,12 +51,28 @@ class Provider {
         return url
     }
 
+    private buildApiUrl(params: Record<string, string | number | boolean | undefined>): string {
+        const base = this.getJsonFeedUrl()
+        const query = Object.entries(params)
+            .filter(([, value]) => value !== undefined && value !== null && value !== "")
+            .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
+            .join("&")
+
+        return `${base}${query ? `?${query}` : ""}`
+    }
+
+    private getMaxPages(): number {
+        const value = parseInt(String($getUserPreference("maxPages") ?? ""), 10)
+        if (!Number.isNaN(value)) {
+            return Math.max(1, Math.min(10, value))
+        }
+        return 3
+    }
+
     public async getLatest(): Promise<AnimeTorrent[]> {
         try {
             console.log("AnimeTosho (NEW): Fetching latest torrents")
-            const base = this.getJsonFeedUrl()
-            const url = `${base}/releases?limit=100`
-            const torrents = await this.fetchTorrents(url)
+            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", limit: 100, order: "size-d" }, this.getMaxPages())
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, null)
         }
         catch (error) {
@@ -74,9 +86,7 @@ class Provider {
         try {
             const q = this.sanitizeTitle(options.query)
             console.log(`AnimeTosho (NEW): Searching for "${q}"`)
-            const base = this.getJsonFeedUrl()
-            const url = `${base}/search?q=${encodeURIComponent(q)}&limit=100`
-            const torrents = await this.fetchTorrents(url)
+            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", q, limit: 100, order: "size-d" }, this.getMaxPages())
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, options.media)
         }
         catch (error) {
@@ -147,9 +157,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            const base = this.getJsonFeedUrl()
-            const url = `${base}/search?q=${encodeURIComponent(query)}&limit=100&only_tor=1&order=size-d`
-            return this.fetchTorrents(url)
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d", only_tor: 1 }, this.getMaxPages())
         })
 
         try {
@@ -186,7 +194,7 @@ class Provider {
             try {
                 const torrents = await this.searchByEID(options.anidbEID, options.query, options.resolution || "")
                 // Filter for single-file torrents
-                atTorrents = torrents.filter(t => (t.file_count ?? 1) === 1 || !t.is_batch)
+                atTorrents = torrents.filter(t => (!this.isBatchTorrent(t)))
 
                 if (atTorrents.length > 0) {
                     foundByID = true
@@ -208,9 +216,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            const base = this.getJsonFeedUrl()
-            const url = `${base}/search?q=${encodeURIComponent(query)}&limit=100&only_tor=1&qx=1`
-            return this.fetchTorrents(url)
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d", only_tor: 1, qx: 1 }, this.getMaxPages())
         })
 
         try {
@@ -224,16 +230,44 @@ class Provider {
         }
 
         // Filter for single-file torrents, unless it's a movie (which might be multi-file)
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.file_count ?? 1) === 1 || !t.is_batch)
+        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.num_files ?? 1) === 1)
 
         // Convert and remove duplicates
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
         const uniqueTorrents = [...new Map(animeTorrents.map(t => [t.link, t])).values()]
 
         console.log(`AnimeTosho (NEW): Found ${uniqueTorrents.length} episodes by query`)
-        return uniqueTorrents
+        if (uniqueTorrents.length > 0)
+            return uniqueTorrents
+        else {
+            // If no torrents found, fallback to all torrent batches for AID
+            console.log("AnimeTosho (NEW): Fallback: Searching episode by AID")
+            if (options.anidbAID && options.anidbAID > 0) {
+                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "")
+                // Use the habari parser to filter for the correct episode number
+                const filteredTorrents = torrents.filter(t => {
+                    const metadata = $habari.parse(t.title)
+                    // Check if the episode number is included in the range
+                    if (metadata.episode_number && metadata.episode_number.length > 0) {
+                        const epNum = options.episodeNumber
+                        if (epNum && epNum > 0) {
+                            const epRange = metadata.episode_number.map(n => parseInt(n)).filter(n => !isNaN(n))
+                            if (epRange.length > 0) {
+                                const minEp = Math.min(...epRange)
+                                const maxEp = Math.max(...epRange)
+                                if (epNum >= minEp && epNum <= maxEp) {
+                                    return true
+                                }
+                            }
+                        }
+                    }
+                    return false
+                })
+                return this.torrentSliceToAnimeTorrentSlice(filteredTorrents, false, media)
+            }
+        }
+        return this.torrentSliceToAnimeTorrentSlice(atTorrents, false, media)
     }
-
     public async getTorrentInfoHash(torrent: AnimeTorrent): Promise<string> {
         // InfoHash is provided directly by the API
         return torrent.infoHash ? torrent.infoHash.toLowerCase() : ""
@@ -255,8 +289,7 @@ class Provider {
         if (!res.ok) throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
 
         const response = await res.json() as any
-
-        const torrents = response.data as AnimeToshoTorrent[]
+        const torrents = Array.isArray(response) ? response : []
 
         // Clean up impossibly high seeder/leecher counts
         return torrents.map(t => {
@@ -266,34 +299,62 @@ class Provider {
         })
     }
 
-    private searchByAID(aid: number, query: string, quality: string): Promise<AnimeToshoTorrent[]> {
-        const base = this.getJsonFeedUrl()
+    private async fetchTorrentsPaginated(
+        params: Record<string, string | number | boolean | undefined>,
+        maxPages: number = 10,
+    ): Promise<AnimeToshoTorrent[]> {
+        const pageSize = 100
+        const results: AnimeToshoTorrent[] = []
+        const seen = new Set<string>()
 
+        for (let page = 1; page <= maxPages; page++) {
+            console.log(`AnimeTosho (NEW): Fetching page ${page} of ${maxPages}`)
+            const url = this.buildApiUrl({ ...params, page, limit: pageSize })
+            const pageTorrents = await this.fetchTorrents(url)
+
+            if (pageTorrents.length === 0) break
+
+            console.log(`AnimeTosho (NEW): Found ${pageTorrents.length} torrents on page ${page}`)
+
+            for (const torrent of pageTorrents) {
+                const key = torrent.id ? String(torrent.id) : torrent.info_hash || torrent.torrent_url
+                if (!key || seen.has(key)) continue
+                seen.add(key)
+                results.push(torrent)
+            }
+
+            if (pageTorrents.length < pageSize) break
+        }
+
+        return results
+    }
+
+    private searchByAID(aid: number, query: string, quality: string): Promise<AnimeToshoTorrent[]> {
         const res = this.formatQuality(quality)
         const q = query ? this.sanitizeTitle(query) : ""
         const qCombined = [q, res].filter(Boolean).join(" ").trim()
 
-        const url =
-            `${base}/releases?aid=${encodeURIComponent(String(aid))}` +
-            (qCombined ? `&q=${encodeURIComponent(qCombined)}` : "") +
-            `&order=size-d&limit=100`
-
-        return this.fetchTorrents(url)
+        return this.fetchTorrentsPaginated({
+            cat: "2020",
+            aid,
+            q: qCombined,
+            order: "size-d",
+            limit: 100,
+        }, this.getMaxPages())
     }
 
     private searchByEID(eid: number, query: string, quality: string): Promise<AnimeToshoTorrent[]> {
-        const base = this.getJsonFeedUrl()
-
         const res = this.formatQuality(quality)
         const q = query ? this.sanitizeTitle(query) : ""
         const qCombined = [q, res].filter(Boolean).join(" ").trim()
 
-        const url =
-            `${base}/releases?eid=${encodeURIComponent(String(eid))}` +
-            (qCombined ? `&q=${encodeURIComponent(qCombined)}` : "") +
-            `&limit=100`
-
-        return this.fetchTorrents(url)
+        return this.fetchTorrentsPaginated({
+            cat: "2020",
+            eid,
+            q: qCombined,
+            order: "size-d",
+            limit: 100,
+        }, this.getMaxPages())
     }
 
     private buildSmartSearchQueries(opts: AnimeSmartSearchOptions): string[] {
@@ -411,7 +472,48 @@ class Provider {
     }
 
     private isBatchTorrent(t: AnimeToshoTorrent): boolean {
-        return (t.file_count ?? 1) > 1 || t.is_batch || (/batch|complete|full|pack|~|season|S\d{1,2}/i.test(t.title) && !/(?:(?:S\d{1,2}E\d{1,3}(?:v\d+)?|S\d{1,2}x\d{1,3}(?:v\d+)?|EP?\.?\s*\d{1,3}(?:v\d+)?|E\d{1,3}(?:v\d+)?|episode)\b|-\s*\d{1,3}\b)/i.test(t.title))
+        const title = t.title;
+        // Multiple files
+        if ((t.num_files ?? 1) > 1)
+            return true;
+
+        // S01E01-09, S01E01~09, S01E01-E09
+        const hasSeasonEpisodeRange =
+            /\bS\d{1,2}E\d{1,3}\s*(?:~|-|–|—)\s*E?\d{1,3}\b/i.test(title);
+        if (hasSeasonEpisodeRange)
+            return true;
+
+        // 01~12, 01～12
+        const hasEpisodeTildeRange =
+            /\b\d{1,4}\s*(?:~|～)\s*\d{1,3}\b/i.test(title);
+        if (hasEpisodeTildeRange)
+            return true;
+
+        // Avoid matching "Season 2 - Episode 23" style releases
+        const hasSeasonEpisodeDash =
+            /\b\d{1,2}\s*-\s*\d{1,3}\b/i.test(title);
+
+        // Numeric ranges with "-" are only considered batches if they look like
+        // an episode range and are not actually season/episode notation
+        const hasEpisodeDashRange =
+            !hasSeasonEpisodeDash &&
+            /\b\d{1,4}\s*-\s*\d{1,3}\b/i.test(title);
+        if (hasEpisodeDashRange)
+            return true;
+
+        // Explicit batch wording
+        const hasBatchKeywords =
+            /\b(?:batch|complete|collection|full|pack|box|boxset|season|全集)\b/i.test(title);
+        if (hasBatchKeywords)
+            return true;
+
+        // S01, S02 etc. without an episode number
+        const hasSeasonOnly =
+            /\bS\d{1,2}\b(?!\s*[Ex]\d)/i.test(title);
+        if (hasSeasonOnly)
+            return true;
+
+        return false;
     }
 
     private buildEpisodeString(opts: AnimeSmartSearchOptions): string {
@@ -538,12 +640,12 @@ class Provider {
     }
 
     private toAnimeTorrent(t: AnimeToshoTorrent, media: AnimeSmartSearchOptions["media"] | null): AnimeTorrent {
-        const metadata = $habari.parse(t.series.title)
+        const metadata = $habari.parse(t.title)
 
-        const formattedDate = t.date_added || new Date(0).toISOString()
+        // Convert UNIX timestamp to ISO string
+        const formattedDate = new Date(t.timestamp * 1000).toISOString()
 
-        const isBatch = this.isBatchTorrent(t)
-
+        const isBatch = t.num_files > 1
         let episode = -1
 
         if (metadata.episode_number && metadata.episode_number.length === 1) {
@@ -563,21 +665,21 @@ class Provider {
         return {
             name: t.title,
             date: formattedDate,
-            size: t.size_bytes,
-            formattedSize: this.bytesToHuman(t.size_bytes),
+            size: t.total_size,
+            formattedSize: this.bytesToHuman(t.total_size),
             seeders: t.seeders,
             leechers: t.leechers,
-            downloadCount: t.downloads,
-            link: t.urls.view,
+            downloadCount: t.torrent_downloaded_count,
+            link: t.link,
             downloadUrl: t.torrent_url,
-            magnetLink: t.magnet,
-            infoHash: t.info_hash ? t.info_hash.toLowerCase() : "",
-            resolution: metadata.video_resolution || t.resolution || "",
+            magnetLink: t.magnet_uri,
+            infoHash: t.info_hash,
+            resolution: metadata.video_resolution || "",
             isBatch: isBatch,
             episodeNumber: episode,
-            releaseGroup: metadata.release_group || t.release_group || "",
+            releaseGroup: metadata.release_group || "",
             isBestRelease: false,
-            confirmed: false, // Will be set in torrentSliceToAnimeTorrentSlice
+            confirmed: false,     // Will be set in torrentSliceToAnimeTorrentSlice
         }
     }
 
