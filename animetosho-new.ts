@@ -72,7 +72,7 @@ class Provider {
     public async getLatest(): Promise<AnimeTorrent[]> {
         try {
             console.log("AnimeTosho (NEW): Fetching latest torrents")
-            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", limit: 100, order: "size-d" }, this.getMaxPages())
+            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", limit: 100, order: "date-d" }, this.getMaxPages())
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, null)
         }
         catch (error) {
@@ -157,7 +157,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d", only_tor: 1 }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d" }, this.getMaxPages())
         })
 
         try {
@@ -216,7 +216,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d", only_tor: 1, qx: 1 }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d" }, this.getMaxPages())
         })
 
         try {
