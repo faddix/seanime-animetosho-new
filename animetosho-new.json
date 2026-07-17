@@ -1,7 +1,7 @@
 {
     "id": "animetosho-new",
     "name": "AnimeTosho (NEW)",
-    "version": "2.4.1",
+    "version": "2.4.2",
     "language": "typescript",
     "type": "anime-torrent-provider",
     "description": "Integrates Anime Tosho (NEW) as a torrent streaming provider for Seanime.",
@@ -9,7 +9,7 @@
     "icon": "https://raw.githubusercontent.com/faddix/seanime-animetosho-new/main/src/animetosho-new-logo.png",
     "lang": "multi",
     "userConfig": {
-        "version": 1,
+        "version": 3,
         "requiresConfig": false,
         "fields": [
             {
@@ -23,6 +23,102 @@
                 "name": "maxPages",
                 "label": "Max pages to fetch",
                 "default": "3"
+            },
+            {
+                "type": "select",
+                "name": "searchOrder",
+                "label": "Search fetch order",
+                "default": "size-d",
+                "options": [
+                    {
+                        "value": "size-a",
+                        "label": "Size (smallest first)"
+                    },
+                    {
+                        "value": "size-d",
+                        "label": "Size (largest first)"
+                    },
+                    {
+                        "value": "date-a",
+                        "label": "Date (oldest first)"
+                    },
+                    {
+                        "value": "date-d",
+                        "label": "Date (newest first)"
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "name": "batchSearchOrder",
+                "label": "Batch fetch order",
+                "default": "size-d",
+                "options": [
+                    {
+                        "value": "size-a",
+                        "label": "Size (smallest first)"
+                    },
+                    {
+                        "value": "size-d",
+                        "label": "Size (largest first)"
+                    },
+                    {
+                        "value": "date-a",
+                        "label": "Date (oldest first)"
+                    },
+                    {
+                        "value": "date-d",
+                        "label": "Date (newest first)"
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "name": "singleEpisodeSearchOrder",
+                "label": "Single episode fetch order",
+                "default": "size-d",
+                "options": [
+                    {
+                        "value": "size-a",
+                        "label": "Size (smallest first)"
+                    },
+                    {
+                        "value": "size-d",
+                        "label": "Size (largest first)"
+                    },
+                    {
+                        "value": "date-a",
+                        "label": "Date (oldest first)"
+                    },
+                    {
+                        "value": "date-d",
+                        "label": "Date (newest first)"
+                    }
+                ]
+            },
+            {
+                "type": "select",
+                "name": "latestTorrentsOrder",
+                "label": "Latest torrents fetch order",
+                "default": "date-d",
+                "options": [
+                    {
+                        "value": "size-a",
+                        "label": "Size (smallest first)"
+                    },
+                    {
+                        "value": "size-d",
+                        "label": "Size (largest first)"
+                    },
+                    {
+                        "value": "date-a",
+                        "label": "Date (oldest first)"
+                    },
+                    {
+                        "value": "date-d",
+                        "label": "Date (newest first)"
+                    }
+                ]
             }
         ]
     },

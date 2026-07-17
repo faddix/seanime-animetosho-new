@@ -44,6 +44,28 @@ class Provider {
         }
     }
 
+    private getUserOrderPreference(preferenceName: string, fallback: string): string {
+        const value = $getUserPreference(preferenceName)
+        if (value && value.trim()) return value.trim()
+        return fallback
+    }
+
+    private getSearchOrder(): string {
+        return this.getUserOrderPreference("searchOrder", "size-d")
+    }
+
+    private getBatchSearchOrder(): string {
+        return this.getUserOrderPreference("batchSearchOrder", "size-d")
+    }
+
+    private getSingleEpisodeSearchOrder(): string {
+        return this.getUserOrderPreference("singleEpisodeSearchOrder", "size-d")
+    }
+
+    private getLatestTorrentsOrder(): string {
+        return this.getUserOrderPreference("latestTorrentsOrder", "date-d")
+    }
+
     private getJsonFeedUrl() {
         let url = $getUserPreference("jsonUrl") || this.jsonFeedUrl
         if (url.endsWith("/")) url = url.slice(0, -1)
@@ -72,7 +94,7 @@ class Provider {
     public async getLatest(): Promise<AnimeTorrent[]> {
         try {
             console.log("AnimeTosho (NEW): Fetching latest torrents")
-            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", limit: 100, order: "date-d" }, this.getMaxPages())
+            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", limit: 100, order: this.getLatestTorrentsOrder() }, this.getMaxPages())
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, null)
         }
         catch (error) {
@@ -86,7 +108,7 @@ class Provider {
         try {
             const q = this.sanitizeTitle(options.query)
             console.log(`AnimeTosho (NEW): Searching for "${q}"`)
-            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", q, limit: 100, order: "size-d" }, this.getMaxPages())
+            const torrents = await this.fetchTorrentsPaginated({ cat: "2020", q, limit: 100, order: this.getSearchOrder() }, this.getMaxPages())
             return this.torrentSliceToAnimeTorrentSlice(torrents, false, options.media)
         }
         catch (error) {
@@ -122,7 +144,7 @@ class Provider {
         if (options.anidbAID && options.anidbAID > 0) {
             console.log(`AnimeTosho (NEW): Searching batches by AID ${options.anidbAID}`)
             try {
-                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "")
+                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getBatchSearchOrder())
 
                 // If it's a movie/single-ep, all torrents are considered "batches"
                 if (isMovieOrSingle) {
@@ -157,7 +179,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d" }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: this.getBatchSearchOrder() }, this.getMaxPages())
         })
 
         try {
@@ -192,7 +214,7 @@ class Provider {
         if (options.anidbEID && options.anidbEID > 0) {
             console.log(`AnimeTosho (NEW): Searching episode by EID ${options.anidbEID}`)
             try {
-                const torrents = await this.searchByEID(options.anidbEID, options.query, options.resolution || "")
+                const torrents = await this.searchByEID(options.anidbEID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
                 // Filter for single-file torrents
                 atTorrents = torrents.filter(t => (!this.isBatchTorrent(t)))
 
@@ -216,7 +238,7 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: "size-d" }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: this.getSingleEpisodeSearchOrder() }, this.getMaxPages())
         })
 
         try {
@@ -243,7 +265,7 @@ class Provider {
             // If no torrents found, fallback to all torrent batches for AID
             console.log("AnimeTosho (NEW): Fallback: Searching episode by AID")
             if (options.anidbAID && options.anidbAID > 0) {
-                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "")
+                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
                 // Use the habari parser to filter for the correct episode number
                 const filteredTorrents = torrents.filter(t => {
                     const metadata = $habari.parse(t.title)
@@ -329,7 +351,7 @@ class Provider {
         return results
     }
 
-    private searchByAID(aid: number, query: string, quality: string): Promise<AnimeToshoTorrent[]> {
+    private searchByAID(aid: number, query: string, quality: string, order: string): Promise<AnimeToshoTorrent[]> {
         const res = this.formatQuality(quality)
         const q = query ? this.sanitizeTitle(query) : ""
         const qCombined = [q, res].filter(Boolean).join(" ").trim()
@@ -338,12 +360,12 @@ class Provider {
             cat: "2020",
             aid,
             q: qCombined,
-            order: "size-d",
+            order,
             limit: 100,
         }, this.getMaxPages())
     }
 
-    private searchByEID(eid: number, query: string, quality: string): Promise<AnimeToshoTorrent[]> {
+    private searchByEID(eid: number, query: string, quality: string, order: string): Promise<AnimeToshoTorrent[]> {
         const res = this.formatQuality(quality)
         const q = query ? this.sanitizeTitle(query) : ""
         const qCombined = [q, res].filter(Boolean).join(" ").trim()
@@ -352,7 +374,7 @@ class Provider {
             cat: "2020",
             eid,
             q: qCombined,
-            order: "size-d",
+            order,
             limit: 100,
         }, this.getMaxPages())
     }
