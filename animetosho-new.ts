@@ -33,7 +33,7 @@ interface AnimeToshoTorrent {
 }
 
 class Provider {
-    private jsonFeedUrl = "https://animetosho.xyz/feed/json"
+    private jsonFeedUrl = "https://feed.animetosho.xyz/feed/json"
 
     public getSettings(): AnimeProviderSettings {
         return {
@@ -494,47 +494,265 @@ class Provider {
     }
 
     private isBatchTorrent(t: AnimeToshoTorrent): boolean {
-        const title = t.title;
-        // Multiple files
-        if ((t.num_files ?? 1) > 1)
+        const title = (t.title ?? "")
+            .normalize("NFKC")
+            // Normalize Unicode dashes and tildes.
+            .replace(/[‐-‒–—―−﹘﹣－]/g, "-")
+            .replace(/[〜～]/g, "~")
+            .replace(/\s+/g, " ")
+            .trim();
+
+        if (!title)
+            return false;
+
+        /*
+         * Definite single-episode formats.
+         *
+         * Used later to prevent season notation from being interpreted as a batch:
+         *   Season 4-04
+         *   S01E01
+         *   S01 - 01
+         */
+        const hasSingleEpisode =
+            // Season 4-04, Season 4 - 04, Season 04-004
+            /\bSeason\s+\d{1,2}\s*-\s*0\d{1,3}(?:v\d+)?\b/i.test(title) ||
+
+            // S01E01, S01 EP01, S01 Episode 01, S01x01
+            /\bS\d{1,2}[\s._-]*(?:E(?:P(?:ISODE)?)?|x)\s*\d{1,4}(?:v\d+)?\b/i.test(
+                title,
+            ) ||
+
+            // Episode 01, Episode #01, EP01
+            /\b(?:Episode|EP)\s*#?\s*\d{1,4}(?:v\d+)?\b/i.test(title) ||
+
+            // S01 - 01, S01.01, S01_01
+            /\bS\d{1,2}[\s._-]+\d{1,4}(?:v\d+)?\b/i.test(title) ||
+
+            // Generic release notation: Show Name - 01
+            /(?:^|[\s\])}])-\s*\d{1,4}(?:v\d+)?\b/i.test(title);
+
+        /*
+         * Explicit batch wording.
+         *
+         * Bare "full" and bare "season" are excluded because they frequently
+         * occur in normal single-episode titles.
+         */
+        const hasExplicitBatchWording =
+            /\b(?:batch|complete(?:d)?|collection|box\s*set|boxset|all\s+(?:episodes?|eps?|seasons?)|full\s+(?:series|season)|(?:series|season|episode)\s+(?:collection|pack))\b/i.test(
+                title,
+            ) ||
+            /[\[({]\s*(?:batch|collection|pack)\s*[\])}]/i.test(title) ||
+            /(?:全集|合集|全巻|全編|完結|完结|一挙|まとめ|완결|전편|全\s*\d{1,4}\s*(?:話|话|集))/u.test(
+                title,
+            );
+
+        if (hasExplicitBatchWording)
             return true;
 
-        // S01E01-09, S01E01~09, S01E01-E09
-        const hasSeasonEpisodeRange =
-            /\bS\d{1,2}E\d{1,3}\s*(?:~|-|–|—)\s*E?\d{1,3}\b/i.test(title);
-        if (hasSeasonEpisodeRange)
+        const definiteBatchPatterns: readonly RegExp[] = [
+            /*
+             * Season/episode ranges:
+             *   S01E01-E12
+             *   S01E01-12
+             *   S01 E01 ~ E12
+             *   S01E01-S02E03
+             *   S01E1144-E1155
+             */
+            /\bS\d{1,2}[\s._-]*E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*(?:S\d{1,2}[\s._-]*)?E?(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\b/i,
+
+            // E01-E12, EP01-EP12, Episode01-Episode12
+            /\bE(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*E?(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\b/i,
+
+            // Episodes 1-12, EPs 01 through 24
+            /\b(?:Episodes?|EPs?)\s*#?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*(?:(?:Episodes?|EPs?)\s*#?\s*)?\d{1,4}(?:v\d+)?\b/i,
+
+            // 第1話-第12話, 1話~12話
+            /(?:第\s*)?\d{1,4}\s*話?\s*(?:-|~|\.\.|から)\s*(?:第\s*)?\d{1,4}\s*話/u,
+
+            /*
+             * Explicit season ranges:
+             *   S01-S03
+             *   S01~S03
+             *   S01 + S02
+             */
+            /\bS\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*S\d{1,2}\b/i,
+
+            // Seasons 1-3, Seasons 1 through 3
+            /\bSeasons\s+\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*(?:Seasons?\s*)?\d{1,2}\b/i,
+
+            // Season 1 - Season 3
+            /\bSeason\s+\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*Season\s+\d{1,2}\b/i,
+
+            /*
+             * Compact singular season range:
+             *   Season 1-3  => batch
+             *   Season 4-04 => single episode, excluded by leading-zero guard
+             */
+            /\bSeason\s+\d{1,2}-(?!0\d+\b)\d{1,2}\b/i,
+
+            // Vol.1-6, Volumes 1~6, Discs 1-4, Parts 1-3, Cours 1-2
+            /\b(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*\d{1,3}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*(?:(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*)?\d{1,3}\b/i,
+
+            // S01 + Specials, Season 1 & OVAs
+            /\b(?:S\d{1,2}|Season\s+\d{1,2})\s*(?:\+|&|,)\s*(?:OVAs?|ONAs?|Specials?|Movies?|Films?|Extras?)\b/i,
+
+            // TV + OVA
+            /\bTV\s*(?:\+|&)\s*(?:OVAs?|ONAs?|Specials?|Movies?|Films?|Extras?)\b/i,
+
+            // S01E01+E02, EP01, EP02, E01 & E02
+            /\b(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?(?:\s*(?:,|\+|&)\s*(?:(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?)?\s*\d{1,4}(?:v\d+)?)+\b/i,
+
+            // S01E01/E02; slash requires a second explicit episode prefix
+            /\b(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*\/\s*(?:(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?)\s*\d{1,4}(?:v\d+)?\b/i,
+
+            // Episodes 01, 02, 03
+            /\b(?:Episodes?|EPs?)\s*[:#]?\s*\d{1,4}(?:v\d+)?(?:\s*(?:,|\+|&)\s*\d{1,4}(?:v\d+)?)+\b/i,
+
+            // (01+02), [01, 02], 01 & 02
+            /(?:^|[\s[(])0\d{1,3}(?:v\d+)?(?:\s*(?:,|\+|&)\s*0?\d{1,4}(?:v\d+)?)+(?=$|[\s)\]])/i,
+        ];
+
+        if (definiteBatchPatterns.some((pattern) => pattern.test(title)))
             return true;
 
-        // 01~12, 01～12
-        const hasEpisodeTildeRange =
-            /\b\d{1,4}\s*(?:~|～)\s*\d{1,3}\b/i.test(title);
-        if (hasEpisodeTildeRange)
+        /*
+         * Completed count:
+         *   12/12
+         *   37/37 + OST
+         *
+         * 12/13 is not complete and therefore is not treated as a batch.
+         */
+        const completedFraction = title.match(/\b(\d{1,4})\s*\/\s*(\d{1,4})\b/);
+
+        if (completedFraction) {
+            const current = Number(completedFraction[1]);
+            const total = Number(completedFraction[2]);
+
+            if (current > 1 && current === total)
+                return true;
+        }
+
+        /*
+         * Bare episode ranges:
+         *   01-12
+         *   001~024
+         *   1-37
+         *   1123~1133
+         *
+         * Numeric/context guards prevent technical metadata, dates, years and
+         * season-episode notation from being classified as batches.
+         */
+        const technicalNumbers = new Set([
+            144,
+            240,
+            360,
+            480,
+            540,
+            576,
+            720,
+            900,
+            1080,
+            1440,
+            2160,
+            4320,
+        ]);
+
+        const bareRangePattern =
+            /(?:^|[^\p{L}\p{N}])(\d{1,4})(?:v\d+)?\s*(-|~|\.\.|to|through|thru)\s*(\d{1,4})(?:v\d+)?(?=$|[^\p{L}\p{N}])/giu;
+
+        for (const match of title.matchAll(bareRangePattern)) {
+            const fromText = match[1];
+            const separator = match[2];
+            const toText = match[3];
+
+            const from = Number(fromText);
+            const to = Number(toText);
+
+            if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from)
+                continue;
+
+            // Exclude year ranges such as 1999-2000.
+            if (
+                from >= 1900 &&
+                from <= 2099 &&
+                to >= 1900 &&
+                to <= 2099
+            ) {
+                continue;
+            }
+
+            // Exclude resolution ranges such as 480-1080.
+            if (technicalNumbers.has(from) && technicalNumbers.has(to))
+                continue;
+
+            const matchedText = match[0];
+            const matchStart = match.index ?? 0;
+            const fromOffset = matchedText.indexOf(fromText);
+            const absoluteFromStart = matchStart + fromOffset;
+            const absoluteRangeEnd = matchStart + matchedText.length;
+
+            const prefix = title.slice(
+                Math.max(0, absoluteFromStart - 32),
+                absoluteFromStart,
+            );
+
+            const suffix = title.slice(
+                absoluteRangeEnd,
+                absoluteRangeEnd + 32,
+            );
+
+            // Exclude 8-10 bit, 24-60 fps, 2-6 channels, etc.
+            if (
+                /^\s*(?:bits?|fps|hz|khz|mhz|mb|gb|kb|ch(?:annels?)?)\b/i.test(
+                    suffix,
+                )
+            ) {
+                continue;
+            }
+
+            // Exclude dates such as 04-05-2024 and 12-05-24.
+            if (
+                separator === "-" &&
+                from <= 31 &&
+                to <= 31 &&
+                /^\s*-\s*(?:\d{1,2}|(?:19|20)\d{2})\b/.test(suffix)
+            ) {
+                continue;
+            }
+
+            /*
+             * Exclude long season/episode notation:
+             *   Season 4-04
+             *   Season 4 - 04
+             *
+             * A zero-padded value after the hyphen is treated as an episode.
+             */
+            if (
+                separator === "-" &&
+                /\bSeason\s*$/i.test(prefix) &&
+                /^0\d+$/.test(toText)
+            ) {
+                continue;
+            }
+
             return true;
+        }
 
-        // Avoid matching "Season 2 - Episode 23" style releases
-        const hasSeasonEpisodeDash =
-            /\b\d{1,2}\s*-\s*\d{1,3}\b/i.test(title);
+        /*
+         * Season-only releases:
+         *   S01
+         *   Season 1
+         *   1st Season
+         *
+         * A definite episode marker overrides this classification.
+         */
+        const hasSeasonMarker =
+            /\b(?:S\d{1,2}|Season\s+\d{1,2}|\d{1,2}(?:st|nd|rd|th)\s+Season)\b/i.test(
+                title,
+            );
 
-        // Numeric ranges with "-" are only considered batches if they look like
-        // an episode range and are not actually season/episode notation
-        const hasEpisodeDashRange =
-            !hasSeasonEpisodeDash &&
-            /\b\d{1,4}\s*-\s*\d{1,3}\b/i.test(title);
-        if (hasEpisodeDashRange)
+        if (hasSeasonMarker && !hasSingleEpisode)
             return true;
-
-        // Explicit batch wording
-        const hasBatchKeywords =
-            /\b(?:batch|complete|collection|full|pack|box|boxset|season|全集)\b/i.test(title);
-        if (hasBatchKeywords)
-            return true;
-
-        // S01, S02 etc. without an episode number
-        const hasSeasonOnly =
-            /\bS\d{1,2}\b(?!\s*[Ex]\d)/i.test(title);
-        if (hasSeasonOnly)
-            return true;
-
         return false;
     }
 
