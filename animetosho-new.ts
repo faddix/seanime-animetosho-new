@@ -67,7 +67,7 @@ class Provider {
     }
 
     private getJsonFeedUrl() {
-        let url = $getUserPreference("jsonUrl") || this.jsonFeedUrl
+        let url = $getUserPreference("jsonURL") || this.jsonFeedUrl
         if (url.endsWith("/")) url = url.slice(0, -1)
         if (!url.startsWith("http")) url = "https://" + url
         return url
