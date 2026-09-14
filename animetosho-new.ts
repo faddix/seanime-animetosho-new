@@ -66,21 +66,31 @@ class Provider {
         return this.getUserOrderPreference("latestTorrentsOrder", "date-d")
     }
 
-    private getJsonFeedUrl() {
-        let url = $getUserPreference("jsonURL") || this.jsonFeedUrl
-        if (url.endsWith("/")) url = url.slice(0, -1)
-        if (!url.startsWith("http")) url = "https://" + url
+    private normalizeFeedUrl(value: string): string {
+        let url = value.trim().split("#")[0].replace(/\/+$/, "")
+        if (url && !/^https?:\/\//i.test(url)) url = "https://" + url
         return url
     }
 
-    private buildApiUrl(params: Record<string, string | number | boolean | undefined>): string {
-        const base = this.getJsonFeedUrl()
+    private getJsonFeedUrl(): string {
+        return this.normalizeFeedUrl($getUserPreference("jsonURL") || "") || this.jsonFeedUrl
+    }
+
+    private getFallbackJsonFeedUrl(): string {
+        return this.normalizeFeedUrl($getUserPreference("fallbackJsonURL") || "")
+    }
+
+    private buildApiUrl(
+        params: Record<string, string | number | boolean | undefined>,
+        base: string = this.getJsonFeedUrl(),
+    ): string {
         const query = Object.entries(params)
             .filter(([, value]) => value !== undefined && value !== null && value !== "")
             .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`)
             .join("&")
 
-        return `${base}${query ? `?${query}` : ""}`
+        const separator = base.includes("?") ? (/[?&]$/.test(base) ? "" : "&") : "?"
+        return `${base}${query ? separator + query : ""}`
     }
 
     private getMaxPages(): number {
@@ -139,25 +149,12 @@ class Provider {
         let foundByID = false
         const media = options.media
 
-        const isMovieOrSingle = media.format === "MOVIE" || media.episodeCount === 1
-
         if (options.anidbAID && options.anidbAID > 0) {
             console.log(`AnimeTosho (NEW): Searching batches by AID ${options.anidbAID}`)
             try {
                 const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getBatchSearchOrder())
 
-                // If it's a movie/single-ep, all torrents are considered "batches"
-                if (isMovieOrSingle) {
-                    atTorrents = torrents
-                } else {
-                    // Otherwise, filter for actual batches (multi-file)
-                    // Also filter out titles that contain episode markers.
-                    const batchTorrents = torrents.filter(t => isMovieOrSingle || this.isBatchTorrent(t))
-
-                    // If we found batches, use them. If not, use all torrents (e.g., for OVAs released as single files)
-                    if (batchTorrents.length == 0) console.log("AnimeTosho (NEW): No batches found by AID, falling back to all releases for this AID")
-                    atTorrents = batchTorrents.length > 0 ? batchTorrents : torrents
-                }
+                atTorrents = torrents.filter(t => this.isBatchCandidate(t, media))
 
                 if (atTorrents.length > 0) {
                     foundByID = true
@@ -192,9 +189,8 @@ class Provider {
             throw e
         }
 
-        // Filter out single-file torrents unless it's a movie/single-ep.
-        // Also filter out titles that contain episode markers.
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || this.isBatchTorrent(t))
+        // Keep confirmed batches and plausible unlabeled packs.
+        allTorrents = allTorrents.filter(t => this.isBatchCandidate(t, media))
 
         // Convert and remove duplicates
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
@@ -209,14 +205,12 @@ class Provider {
         let foundByID = false
         const media = options.media
 
-        const isMovieOrSingle = media.format === "MOVIE" || media.episodeCount === 1
-
         if (options.anidbEID && options.anidbEID > 0) {
             console.log(`AnimeTosho (NEW): Searching episode by EID ${options.anidbEID}`)
             try {
                 const torrents = await this.searchByEID(options.anidbEID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
-                // Filter for single-file torrents
-                atTorrents = torrents.filter(t => (!this.isBatchTorrent(t)))
+                // Keep single episodes even when subtitles or other sidecar files are included.
+                atTorrents = torrents.filter(t => !this.isBatchTorrent(t, media))
 
                 if (atTorrents.length > 0) {
                     foundByID = true
@@ -251,8 +245,8 @@ class Provider {
             throw e
         }
 
-        // Filter for single-file torrents, unless it's a movie (which might be multi-file)
-        allTorrents = allTorrents.filter(t => isMovieOrSingle || (t.num_files ?? 1) === 1)
+        // Use the same classification for EID, query and displayed results.
+        allTorrents = allTorrents.filter(t => !this.isBatchTorrent(t, media))
 
         // Convert and remove duplicates
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
@@ -266,24 +260,17 @@ class Provider {
             console.log("AnimeTosho (NEW): Fallback: Searching episode by AID")
             if (options.anidbAID && options.anidbAID > 0) {
                 const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
-                // Use the habari parser to filter for the correct episode number
+                // Habari lists both range endpoints and discrete episodes; only title ranges
+                // justify including intervening episodes. Also accept absolute season numbering.
+                const wanted = [options.episodeNumber]
+                if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
+                    wanted.push(options.episodeNumber + media.absoluteSeasonOffset)
+                }
                 const filteredTorrents = torrents.filter(t => {
                     const metadata = $habari.parse(t.title)
-                    // Check if the episode number is included in the range
-                    if (metadata.episode_number && metadata.episode_number.length > 0) {
-                        const epNum = options.episodeNumber
-                        if (epNum && epNum > 0) {
-                            const epRange = metadata.episode_number.map(n => parseInt(n)).filter(n => !isNaN(n))
-                            if (epRange.length > 0) {
-                                const minEp = Math.min(...epRange)
-                                const maxEp = Math.max(...epRange)
-                                if (epNum >= minEp && epNum <= maxEp) {
-                                    return true
-                                }
-                            }
-                        }
-                    }
-                    return false
+                    const episodes = (metadata.episode_number || []).filter(n => n.trim() !== "").map(Number).filter(Number.isFinite)
+                    const ranges = this.getEpisodeRanges(t.title)
+                    return wanted.some(ep => ep > 0 && (episodes.includes(ep) || ranges.some(([from, to]) => ep >= from && ep <= to)))
                 })
                 return this.torrentSliceToAnimeTorrentSlice(filteredTorrents, false, media)
             }
@@ -307,11 +294,15 @@ class Provider {
     private async fetchTorrents(url: string): Promise<AnimeToshoTorrent[]> {
         console.log(`AnimeTosho (NEW): Fetching from ${url}`)
 
-        const res = await fetch(url)
+        // Fetch timeout is in seconds; bound the wait before failover.
+        const res = await fetch(url, { timeout: 20 })
         if (!res.ok) throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
 
         const response = await res.json() as any
-        const torrents = Array.isArray(response) ? response : []
+        if (!Array.isArray(response) || response.some(t => !t || typeof t.title !== "string")) {
+            throw new Error("Invalid feed response: expected an array of torrents")
+        }
+        const torrents = response as AnimeToshoTorrent[]
 
         // Clean up impossibly high seeder/leecher counts
         return torrents.map(t => {
@@ -328,11 +319,27 @@ class Provider {
         const pageSize = 100
         const results: AnimeToshoTorrent[] = []
         const seen = new Set<string>()
+        const feedUrls = [...new Set([this.getJsonFeedUrl(), this.getFallbackJsonFeedUrl()].filter(Boolean))]
+        const failures: string[] = []
+        let feedIndex = 0
 
         for (let page = 1; page <= maxPages; page++) {
             console.log(`AnimeTosho (NEW): Fetching page ${page} of ${maxPages}`)
-            const url = this.buildApiUrl({ ...params, page, limit: pageSize })
-            const pageTorrents = await this.fetchTorrents(url)
+            let pageTorrents: AnimeToshoTorrent[]
+            while (true) {
+                try {
+                    const url = this.buildApiUrl({ ...params, page, limit: pageSize }, feedUrls[feedIndex])
+                    pageTorrents = await this.fetchTorrents(url)
+                    break
+                }
+                catch (error) {
+                    const reason = error instanceof Error ? error.message : String(error)
+                    failures.push(`${feedIndex === 0 ? "Primary" : "Fallback"} feed: ${reason}`)
+                    feedIndex++
+                    if (feedIndex >= feedUrls.length) throw new Error(failures.join("; "))
+                    console.warn(`AnimeTosho (NEW): Primary feed failed; retrying page ${page} with the fallback feed`)
+                }
+            }
 
             if (pageTorrents.length === 0) break
 
@@ -444,7 +451,6 @@ class Provider {
                 if (userQuery) {
                     str += " " + userQuery
                 }
-                str += " " + this.buildBatchGroup(media)
                 if (resolution) {
                     str += " " + this.formatQuality(resolution)
                 }
@@ -493,267 +499,156 @@ class Provider {
         return String(v).padStart(2, "0")
     }
 
-    private isBatchTorrent(t: AnimeToshoTorrent): boolean {
-        const title = (t.title ?? "")
-            .normalize("NFKC")
-            // Normalize Unicode dashes and tildes.
-            .replace(/[‐-‒–—―−﹘﹣－]/g, "-")
+    private normalizeTorrentTitle(title: string): string {
+        return (title || "").normalize("NFKC")
+            .replace(/[‐‑‒–—―−﹘﹣－]/g, "-")
             .replace(/[〜～]/g, "~")
-            .replace(/\s+/g, " ")
-            .trim();
+            .replace(/_/g, " ").replace(/\s+/g, " ").trim()
+    }
 
-        if (!title)
-            return false;
+    private hasSingleEpisodeMarker(title: string): boolean {
+        // Years in release metadata are not episode numbers.
+        title = title.replace(/[\[({]\s*(?:19|20)\d{2}(?:\s*-\s*(?:19|20)\d{2})?\s*[\])}]/g, " ")
+            .replace(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, " ")
+            .replace(/\b\d{1,2}[-/.]\d{1,2}[-/.](?:\d{2}|(?:19|20)\d{2})\b/g, " ")
+        return /\b(?:Season|Part|Cour)\s+\d{1,2}\s*-\s*\d{1,4}(?:v\d+)?\b/i.test(title) ||
+            /\bS\d{1,2}[\s.-]*(?:E(?:P(?:ISODE)?)?|x)[\s.#-]*\d{1,4}(?:\.\d+)?(?:v\d+)?\b/i.test(title) ||
+            /\b(?:Episode|EP|E)[\s.#-]*\d{1,4}(?:\.\d+)?(?:v\d+)?\b/i.test(title) ||
+            /\bS\d{1,2}[\s.-]+\d{1,4}(?:\.\d+)?(?:v\d+)?\b/i.test(title) ||
+            /(?:^|[\s\])}])-\s*\d{1,4}(?:\.\d+)?(?:v\d+)?\b/i.test(title) ||
+            /[\[({]\s*\d{1,4}(?:\.\d+)?(?:v\d+)?\s*[\])}]/i.test(title) ||
+            /(?:第\s*\d{1,4}(?:\.\d+)?\s*[話话集]|\d{1,4}\s*[話话])/u.test(title) ||
+            // Padded releases also use "Title 01 [1080p]" without a dash.
+            /\s0\d{1,3}(?:\.\d+)?(?:v\d+)?(?=\s*(?:[\[({]|$|\.(?:mkv|mp4|avi)$))/i.test(
+                title.replace(/\b(?:Season|Part|Cour|Vol(?:ume)?\.?|Disc)\s*\d{1,4}\b/gi, ""),
+            )
+    }
 
-        /*
-         * Definite single-episode formats.
-         *
-         * Used later to prevent season notation from being interpreted as a batch:
-         *   Season 4-04
-         *   S01E01
-         *   S01 - 01
-         */
-        const hasSingleEpisode =
-            // Season 4-04, Season 4 - 04, Season 04-004
-            /\bSeason\s+\d{1,2}\s*-\s*0\d{1,3}(?:v\d+)?\b/i.test(title) ||
+    /** Only ascending episode ranges, with dates, technical data and season labels excluded. */
+    private getEpisodeRanges(rawTitle: string): [number, number][] {
+        const title = this.normalizeTorrentTitle(rawTitle)
+            .replace(/\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/g, " ")
+            .replace(/\b\d{1,2}[-/.]\d{1,2}[-/.](?:\d{2}|(?:19|20)\d{2})\b/g, " ")
+            // "Season 2 - 12" and "Part 2 - 03" are not ranges.
+            .replace(/\b(?:Season|Part|Cour|Vol(?:ume)?\.?|Disc)\s*\d{1,4}\b/gi, " ")
+        const ranges: [number, number][] = []
+        const repeatedSeason = /\bS(\d{1,2})[\s.-]*E(\d{1,4})(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*S(\d{1,2})[\s.-]*E(\d{1,4})(?:v\d+)?\b/gi
+        for (const match of title.matchAll(repeatedSeason)) {
+            if (Number(match[1]) === Number(match[3]) && Number(match[4]) > Number(match[2])) ranges.push([Number(match[2]), Number(match[4])])
+        }
+        const number = "(\\d{1,4}(?:\\.\\d+)?)(?:v\\d+)?"
+        const join = "\\s*(?:-|~|\\.\\.|to|through|thru|から)\\s*"
+        const marked = new RegExp("\\b(?:S\\d{1,2}[\\s.-]*)?E(?:P(?:ISODES?)?|S)?[\\s.#-]*" + number +
+            join + "(?:E(?:P(?:ISODES?)?|S)?[\\s.#-]*)?" + number + "(?![\\p{L}\\p{N}])", "giu")
+        for (const match of title.matchAll(marked)) {
+            const from = Number(match[1]), to = Number(match[2])
+            if (to > from) ranges.push([from, to])
+        }
+        const eastAsian = /(?:第\s*)?(\d{1,4})\s*[話话集]?\s*(?:-|~|\.\.|から)\s*(?:第\s*)?(\d{1,4})\s*[話话集]/gu
+        for (const match of title.matchAll(eastAsian)) {
+            if (Number(match[2]) > Number(match[1])) ranges.push([Number(match[1]), Number(match[2])])
+        }
+        // Lookahead permits overlapping candidates, e.g. "86 - 01-12".
+        const bare = new RegExp("(?=(^|[^\\p{L}\\p{N}.])" + number + join + number + "(?=$|[^\\p{L}\\p{N}.]|TV\\b))", "giu")
+        const technical = new Set([144, 240, 360, 480, 540, 576, 720, 900, 1080, 1440, 2160, 4320])
+        for (const match of title.matchAll(bare)) {
+            const from = Number(match[2]), to = Number(match[3])
+            if (to <= from) continue
+            const start = (match.index || 0) + match[1].length
+            const tail = title.slice(start)
+            const span = tail.match(new RegExp("^" + number + join + number))![0]
+            const prefix = title.slice(0, start)
+            const suffix = title.slice(start + span.length)
+            if (from >= 1900 && from <= 2099 && to >= 1900 && to <= 2099) continue
+            if (technical.has(from) && technical.has(to)) continue
+            if (/^\s*-?\s*(?:bits?|fps|hz|khz|mhz|mb|gb|kb|ch(?:annels?)?|audio|AAC|FLAC|AC3|EAC3|DTS|Opus)\b/i.test(suffix)) continue
+            if (/\b(?:audio|AAC|FLAC|AC3|EAC3|DTS|Opus)\s*$/i.test(prefix)) continue
+            if (/\b(?:Season|Part|Cour|Vol(?:ume)?\.?|Disc)\s*$/i.test(prefix)) continue
+            // Numbers in the title itself ("86 - 100", "7 - 12") need an episode label.
+            if (!prefix.replace(/^\s*(?:\[[^\]]*\]\s*)+/, "").trim() && !/^0\d/.test(match[2])) continue
+            ranges.push([from, to])
+        }
+        return ranges
+    }
 
-            // S01E01, S01 EP01, S01 Episode 01, S01x01
-            /\bS\d{1,2}[\s._-]*(?:E(?:P(?:ISODE)?)?|x)\s*\d{1,4}(?:v\d+)?\b/i.test(
-                title,
-            ) ||
+    private isBatchTorrent(t: AnimeToshoTorrent, media: Media | null = null): boolean {
+        const title = this.normalizeTorrentTitle(t.title)
+        if (!title) return false
 
-            // Episode 01, Episode #01, EP01
-            /\b(?:Episode|EP)\s*#?\s*\d{1,4}(?:v\d+)?\b/i.test(title) ||
-
-            // S01 - 01, S01.01, S01_01
-            /\bS\d{1,2}[\s._-]+\d{1,4}(?:v\d+)?\b/i.test(title) ||
-
-            // Generic release notation: Show Name - 01
-            /(?:^|[\s\])}])-\s*\d{1,4}(?:v\d+)?\b/i.test(title);
-
-        /*
-         * Explicit batch wording.
-         *
-         * Bare "full" and bare "season" are excluded because they frequently
-         * occur in normal single-episode titles.
-         */
-        const hasExplicitBatchWording =
-            /\b(?:batch|complete(?:d)?|collection|box\s*set|boxset|all\s+(?:episodes?|eps?|seasons?)|full\s+(?:series|season)|(?:series|season|episode)\s+(?:collection|pack))\b/i.test(
-                title,
-            ) ||
-            /[\[({]\s*(?:batch|collection|pack)\s*[\])}]/i.test(title) ||
-            /(?:全集|合集|全巻|全編|完結|完结|一挙|まとめ|완결|전편|全\s*\d{1,4}\s*(?:話|话|集))/u.test(
-                title,
-            );
-
-        if (hasExplicitBatchWording)
-            return true;
-
-        const definiteBatchPatterns: readonly RegExp[] = [
-            /*
-             * Season/episode ranges:
-             *   S01E01-E12
-             *   S01E01-12
-             *   S01 E01 ~ E12
-             *   S01E01-S02E03
-             *   S01E1144-E1155
-             */
-            /\bS\d{1,2}[\s._-]*E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*(?:S\d{1,2}[\s._-]*)?E?(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\b/i,
-
-            // E01-E12, EP01-EP12, Episode01-Episode12
-            /\bE(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*E?(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\b/i,
-
-            // Episodes 1-12, EPs 01 through 24
-            /\b(?:Episodes?|EPs?)\s*#?\s*\d{1,4}(?:v\d+)?\s*(?:-|~|\.\.|to|through|thru)\s*(?:(?:Episodes?|EPs?)\s*#?\s*)?\d{1,4}(?:v\d+)?\b/i,
-
-            // 第1話-第12話, 1話~12話
-            /(?:第\s*)?\d{1,4}\s*話?\s*(?:-|~|\.\.|から)\s*(?:第\s*)?\d{1,4}\s*話/u,
-
-            /*
-             * Explicit season ranges:
-             *   S01-S03
-             *   S01~S03
-             *   S01 + S02
-             */
-            /\bS\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*S\d{1,2}\b/i,
-
-            // Seasons 1-3, Seasons 1 through 3
-            /\bSeasons\s+\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*(?:Seasons?\s*)?\d{1,2}\b/i,
-
-            // Season 1 - Season 3
-            /\bSeason\s+\d{1,2}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*Season\s+\d{1,2}\b/i,
-
-            /*
-             * Compact singular season range:
-             *   Season 1-3  => batch
-             *   Season 4-04 => single episode, excluded by leading-zero guard
-             */
-            /\bSeason\s+\d{1,2}-(?!0\d+\b)\d{1,2}\b/i,
-
-            // Vol.1-6, Volumes 1~6, Discs 1-4, Parts 1-3, Cours 1-2
-            /\b(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*\d{1,3}\s*(?:-|~|\.\.|to|through|thru|\+|&)\s*(?:(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*)?\d{1,3}\b/i,
-
-            // S01 + Specials, Season 1 & OVAs
-            /\b(?:S\d{1,2}|Season\s+\d{1,2})\s*(?:\+|&|,)\s*(?:OVAs?|ONAs?|Specials?|Movies?|Films?|Extras?)\b/i,
-
-            // TV + OVA
-            /\bTV\s*(?:\+|&)\s*(?:OVAs?|ONAs?|Specials?|Movies?|Films?|Extras?)\b/i,
-
-            // S01E01+E02, EP01, EP02, E01 & E02
-            /\b(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?(?:\s*(?:,|\+|&)\s*(?:(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?)?\s*\d{1,4}(?:v\d+)?)+\b/i,
-
-            // S01E01/E02; slash requires a second explicit episode prefix
-            /\b(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?\s*\d{1,4}(?:v\d+)?\s*\/\s*(?:(?:S\d{1,2}[\s._-]*)?E(?:P(?:ISODE)?)?)\s*\d{1,4}(?:v\d+)?\b/i,
-
-            // Episodes 01, 02, 03
-            /\b(?:Episodes?|EPs?)\s*[:#]?\s*\d{1,4}(?:v\d+)?(?:\s*(?:,|\+|&)\s*\d{1,4}(?:v\d+)?)+\b/i,
-
-            // (01+02), [01, 02], 01 & 02
-            /(?:^|[\s[(])0\d{1,3}(?:v\d+)?(?:\s*(?:,|\+|&)\s*0?\d{1,4}(?:v\d+)?)+(?=$|[\s)\]])/i,
-        ];
-
-        if (definiteBatchPatterns.some((pattern) => pattern.test(title)))
-            return true;
-
-        /*
-         * Completed count:
-         *   12/12
-         *   37/37 + OST
-         *
-         * 12/13 is not complete and therefore is not treated as a batch.
-         */
-        const completedFraction = title.match(/\b(\d{1,4})\s*\/\s*(\d{1,4})\b/);
-
-        if (completedFraction) {
-            const current = Number(completedFraction[1]);
-            const total = Number(completedFraction[2]);
-
-            if (current > 1 && current === total)
-                return true;
+        // Explicit ranges and batch labels take precedence over individual episode markers.
+        if (this.getEpisodeRanges(title).length > 0) return true
+        const multiSeason = /\bS(\d{1,2})(?:E\d{1,4})?\s*(-|~|\.\.|to|through|thru|\+|&)\s*S(\d{1,2})(?:E\d{1,4})?\b/gi
+        for (const match of title.matchAll(multiSeason)) {
+            if (/[+&]/.test(match[2]) ? Number(match[3]) !== Number(match[1]) : Number(match[3]) > Number(match[1])) return true
+        }
+        const seasons = /\bSeasons?\s+(\d{1,2})\s*(-|~|to|through|thru|\+|&)\s*(Seasons?\s+)?(\d{1,2})\b/gi
+        for (const match of title.matchAll(seasons)) {
+            if (!/^Seasons\b/i.test(match[0]) && !match[3]) continue
+            if (/[+&]/.test(match[2]) ? Number(match[4]) !== Number(match[1]) : Number(match[4]) > Number(match[1])) return true
         }
 
-        /*
-         * Bare episode ranges:
-         *   01-12
-         *   001~024
-         *   1-37
-         *   1123~1133
-         *
-         * Numeric/context guards prevent technical metadata, dates, years and
-         * season-episode notation from being classified as batches.
-         */
-        const technicalNumbers = new Set([
-            144,
-            240,
-            360,
-            480,
-            540,
-            576,
-            720,
-            900,
-            1080,
-            1440,
-            2160,
-            4320,
-        ]);
-
-        const bareRangePattern =
-            /(?:^|[^\p{L}\p{N}])(\d{1,4})(?:v\d+)?\s*(-|~|\.\.|to|through|thru)\s*(\d{1,4})(?:v\d+)?(?=$|[^\p{L}\p{N}])/giu;
-
-        for (const match of title.matchAll(bareRangePattern)) {
-            const fromText = match[1];
-            const separator = match[2];
-            const toText = match[3];
-
-            const from = Number(fromText);
-            const to = Number(toText);
-
-            if (!Number.isFinite(from) || !Number.isFinite(to) || to <= from)
-                continue;
-
-            // Exclude year ranges such as 1999-2000.
-            if (
-                from >= 1900 &&
-                from <= 2099 &&
-                to >= 1900 &&
-                to <= 2099
-            ) {
-                continue;
-            }
-
-            // Exclude resolution ranges such as 480-1080.
-            if (technicalNumbers.has(from) && technicalNumbers.has(to))
-                continue;
-
-            const matchedText = match[0];
-            const matchStart = match.index ?? 0;
-            const fromOffset = matchedText.indexOf(fromText);
-            const absoluteFromStart = matchStart + fromOffset;
-            const absoluteRangeEnd = matchStart + matchedText.length;
-
-            const prefix = title.slice(
-                Math.max(0, absoluteFromStart - 32),
-                absoluteFromStart,
-            );
-
-            const suffix = title.slice(
-                absoluteRangeEnd,
-                absoluteRangeEnd + 32,
-            );
-
-            // Exclude 8-10 bit, 24-60 fps, 2-6 channels, etc.
-            if (
-                /^\s*(?:bits?|fps|hz|khz|mhz|mb|gb|kb|ch(?:annels?)?)\b/i.test(
-                    suffix,
-                )
-            ) {
-                continue;
-            }
-
-            // Exclude dates such as 04-05-2024 and 12-05-24.
-            if (
-                separator === "-" &&
-                from <= 31 &&
-                to <= 31 &&
-                /^\s*-\s*(?:\d{1,2}|(?:19|20)\d{2})\b/.test(suffix)
-            ) {
-                continue;
-            }
-
-            /*
-             * Exclude long season/episode notation:
-             *   Season 4-04
-             *   Season 4 - 04
-             *
-             * A zero-padded value after the hyphen is treated as an episode.
-             */
-            if (
-                separator === "-" &&
-                /\bSeason\s*$/i.test(prefix) &&
-                /^0\d+$/.test(toText)
-            ) {
-                continue;
-            }
-
-            return true;
+        const list = /\b(?:S\d{1,2}[\s.-]*)?E(?:P(?:ISODES?)?|S)?[\s.#-]*(\d{1,4}(?:\.\d+)?)(?:v\d+)?\s*(?:,|\+|&|\/(?=\s*(?:S\d{1,2})?E))\s*(?:(?:S\d{1,2}[\s.-]*)?E(?:P(?:ISODES?)?|S)?[\s.#-]*)?(\d{1,4}(?:\.\d+)?)(?:v\d+)?\b/gi
+        let match: RegExpExecArray | null
+        while ((match = list.exec(title)) !== null) {
+            if (Number(match[1]) !== Number(match[2])) return true
+            // Revisit the second item so "E01, E01, E02" still finds E02.
+            list.lastIndex = match.index + 1
+        }
+        const bareLists = /(?:^|[\s[(])(\d{1,4}(?:v\d+)?(?:\s*(?:,|\+|&)\s*\d{1,4}(?:v\d+)?)+)(?=$|[\s)\]])/gi
+        for (const match of title.matchAll(bareLists)) {
+            const prefix = title.slice(0, (match.index || 0) + match[0].indexOf(match[1]))
+            const suffix = title.slice((match.index || 0) + match[0].length)
+            if (/\b(?:audio|AAC|FLAC|AC3|EAC3|DTS|Opus)\s*$/i.test(prefix)) continue
+            if (/^\s*(?:bits?|ch(?:annels?)?|audio|fps)\b/i.test(suffix)) continue
+            if (new Set(match[1].split(/[,\+&]/).map(n => Number(n.trim().replace(/v\d+$/i, "")))).size > 1) return true
         }
 
-        /*
-         * Season-only releases:
-         *   S01
-         *   Season 1
-         *   1st Season
-         *
-         * A definite episode marker overrides this classification.
-         */
-        const hasSeasonMarker =
-            /\b(?:S\d{1,2}|Season\s+\d{1,2}|\d{1,2}(?:st|nd|rd|th)\s+Season)\b/i.test(
-                title,
-            );
+        // A complete edition of a known one-episode work is still one episode.
+        if (media && (media.format === "MOVIE" || media.episodeCount === 1)) return false
 
-        if (hasSeasonMarker && !hasSingleEpisode)
-            return true;
-        return false;
+        // A bracketed release tag is stronger evidence than a word in the anime/episode title.
+        if (/[\[({]\s*(?:batch|complete(?:d)?(?:\s+(?:series|season|collection))?|collection|pack|box\s*set)\s*[\])}]/i.test(title) ||
+            /\b(?:batch|box\s*set|boxset|all\s+(?:episodes?|eps?|seasons?)|full\s+(?:series|season))\b/i.test(title) ||
+            /(?:全集|合集|全巻|全編|一挙|まとめ|완결|전편|全\s*\d{1,4}\s*(?:話|话|集))/u.test(title)) return true
+        for (const match of title.matchAll(/[\[({]\s*(\d{1,4})\s*(?:episodes|eps)\s*[\])}]/gi)) {
+            if (Number(match[1]) > 1) return true
+        }
+        for (const match of title.matchAll(/[\[({]\s*(\d{1,3})[\s-]+(?:movie|film)\s+collection\s*[\])}]/gi)) {
+            if (Number(match[1]) > 1) return true
+        }
+
+        const single = this.hasSingleEpisodeMarker(title)
+        if (single) return false
+
+        // A source-tagged whole-season release is conventional pack notation.
+        // A season word alone can be an anime name; numbered movies/specials also need care.
+        if (/\b(?:S\d{1,2}|Season\s+\d{1,2}|\d{1,2}(?:st|nd|rd|th)\s+Season)\b/i.test(title) &&
+            /\b(?:BD|BDRip|Blu[ .-]?Ray|DVD|DVDRip|WEB|WEBRip|WEB[ .-]?DL)\b/i.test(title) &&
+            !/\b(?:movies?|films?|specials?|OVAs?|ONAs?)\b/i.test(title)) return true
+
+        // Bare "collection", "season", "part" and "final" can be part of an anime name.
+        if (/\b(?:complete(?:d)?(?:\s+(?:series|season|collection))?|(?:series|season|episode)\s+(?:collection|pack))\b/i.test(title) ||
+            /\b(?:S\d{1,2}|Season\s+\d{1,2}|TV)\s*(?:\+|&|,)\s*(?:OVAs?|ONAs?|Specials?|Movies?|Films?|Extras?)\b/i.test(title) ||
+            /\b(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*\d{1,3}\s*(?:-|~|to|\+|&)\s*(?:(?:Vol(?:ume)?s?|Discs?|Parts?|Cours?)\.?\s*)?\d{1,3}\b/i.test(title)) return true
+
+        // num_files includes subtitles, fonts, artwork and NFOs. It is not proof of a batch.
+        // Ambiguous names stay available to episode searches; batch search can retain them separately.
+        return false
+    }
+
+    private isBatchCandidate(t: AnimeToshoTorrent, media: Media): boolean {
+        if (media.format === "MOVIE" || media.episodeCount === 1 || this.isBatchTorrent(t, media)) return true
+        let title = this.normalizeTorrentTitle(t.title)
+        // Compact "Season 1-3" / "S1-2" can mean a season range or an episode.
+        // Retain these ambiguous multi-file results without asserting that they are batches.
+        if (t.num_files > 1 && /\b(?:S|Season\s+|Part\s+)\d{1,2}-[1-9]\d?\b/i.test(title)) return true
+        // Do not mistake numbers in known anime names ("Gundam 00") for episodes.
+        for (const name of this.getAllTitles(media)) {
+            const escaped = this.normalizeTorrentTitle(name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+            if (escaped) title = title.replace(new RegExp("(^|[^\\p{L}\\p{N}])" + escaped + "(?=$|[^\\p{L}\\p{N}])", "giu"), "$1Anime")
+        }
+        // Preserve unlabeled packs without labeling an identified episode as a batch.
+        return t.num_files > 1 && !this.hasSingleEpisodeMarker(title)
     }
 
     private buildEpisodeString(opts: AnimeSmartSearchOptions): string {
@@ -761,25 +656,6 @@ class Provider {
         const pEp = this.zeropad(opts.episodeNumber)
         // e.g. ("05"|"e5"|"ep5"|"05")
         return `("${pEp}"|"e${opts.episodeNumber}"|"ep${opts.episodeNumber}"|"${this.zeropad(opts.episodeNumber)}")`
-    }
-
-    private buildBatchGroup(media: AnimeSmartSearchOptions["media"]): string {
-        const epCount = media.episodeCount || 0
-        const parts = [
-            `"${this.zeropad(1)} - ${this.zeropad(epCount)}"`,
-            `"${this.zeropad(1)} ~ ${this.zeropad(epCount)}"`,
-            `"Batch"`,
-            `"Full"`,
-            `"Pack"`,
-            `"Complete"`,
-            `"+ OVA"`,
-            `"+ Specials"`,
-            `"+ Special"`,
-            `"Seasons"`,
-            `"Season"`,
-            `"Parts"`,
-        ]
-        return `(${parts.join("|")})`
     }
 
     private buildTitleString(opts: AnimeSmartSearchOptions): string {
@@ -885,11 +761,12 @@ class Provider {
         // Convert UNIX timestamp to ISO string
         const formattedDate = new Date(t.timestamp * 1000).toISOString()
 
-        const isBatch = t.num_files > 1
+        const isBatch = this.isBatchTorrent(t, media)
         let episode = -1
 
         if (metadata.episode_number && metadata.episode_number.length === 1) {
-            episode = parseInt(metadata.episode_number[0]) || -1
+            const parsedEpisode = Number(metadata.episode_number[0])
+            episode = metadata.episode_number[0].trim() && Number.isFinite(parsedEpisode) ? parsedEpisode : -1
         }
 
         // Force set episode number to 1 if it's a movie or single-episode and the torrent isn't a batch

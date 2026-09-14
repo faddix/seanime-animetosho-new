@@ -1,7 +1,7 @@
 {
     "id": "animetosho-new",
     "name": "AnimeTosho (NEW)",
-    "version": "2.4.4",
+    "version": "2.4.5",
     "language": "typescript",
     "type": "anime-torrent-provider",
     "description": "Integrates Anime Tosho (NEW) as a torrent streaming provider for Seanime.",
@@ -9,7 +9,7 @@
     "icon": "https://raw.githubusercontent.com/faddix/seanime-animetosho-new/main/src/animetosho-new-logo.png",
     "lang": "multi",
     "userConfig": {
-        "version": 3,
+        "version": 4,
         "requiresConfig": false,
         "fields": [
             {
@@ -17,6 +17,12 @@
                 "name": "jsonURL",
                 "label": "Feed URL",
                 "default": "https://feed.animetosho.xyz/feed/json"
+            },
+            {
+                "type": "text",
+                "name": "fallbackJsonURL",
+                "label": "Fallback feed URL (optional)",
+                "default": "https://feed.animetosho.net/feed/json"
             },
             {
                 "type": "text",
