@@ -226,6 +226,32 @@ class Provider {
             return this.torrentSliceToAnimeTorrentSlice(atTorrents, true, media)
         }
 
+        if (options.anidbAID && options.anidbAID > 0) {
+            console.log(`AnimeTosho (NEW): Fallback: Searching episode by AID ${options.anidbAID}`)
+            try {
+                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
+                // Habari lists both range endpoints and discrete episodes; only title ranges
+                // justify including intervening episodes. Also accept absolute season numbering.
+                const wanted = [options.episodeNumber]
+                if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
+                    wanted.push(options.episodeNumber + media.absoluteSeasonOffset)
+                }
+                const filteredTorrents = torrents.filter(t => {
+                    const metadata = $habari.parse(t.title)
+                    const episodes = (metadata.episode_number || []).filter(n => n.trim() !== "").map(Number).filter(Number.isFinite)
+                    const ranges = this.getEpisodeRanges(t.title)
+                    return wanted.some(ep => ep > 0 && (episodes.includes(ep) || ranges.some(([from, to]) => ep >= from && ep <= to)))
+                })
+                if (filteredTorrents.length > 0) {
+                    console.log(`AnimeTosho (NEW): Found ${filteredTorrents.length} episodes by AID`)
+                    return this.torrentSliceToAnimeTorrentSlice(filteredTorrents, false, media)
+                }
+            }
+            catch (e) {
+                console.warn("AnimeTosho (NEW): searchByAID failed: " + (e as Error).message)
+            }
+        }
+
         // Fallback: Search by query
         console.log("AnimeTosho (NEW): Fallback: Searching episode by query")
         const queries = this.buildSmartSearchQueries(options)
@@ -253,29 +279,7 @@ class Provider {
         const uniqueTorrents = [...new Map(animeTorrents.map(t => [t.link, t])).values()]
 
         console.log(`AnimeTosho (NEW): Found ${uniqueTorrents.length} episodes by query`)
-        if (uniqueTorrents.length > 0)
-            return uniqueTorrents
-        else {
-            // If no torrents found, fallback to all torrent batches for AID
-            console.log("AnimeTosho (NEW): Fallback: Searching episode by AID")
-            if (options.anidbAID && options.anidbAID > 0) {
-                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
-                // Habari lists both range endpoints and discrete episodes; only title ranges
-                // justify including intervening episodes. Also accept absolute season numbering.
-                const wanted = [options.episodeNumber]
-                if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
-                    wanted.push(options.episodeNumber + media.absoluteSeasonOffset)
-                }
-                const filteredTorrents = torrents.filter(t => {
-                    const metadata = $habari.parse(t.title)
-                    const episodes = (metadata.episode_number || []).filter(n => n.trim() !== "").map(Number).filter(Number.isFinite)
-                    const ranges = this.getEpisodeRanges(t.title)
-                    return wanted.some(ep => ep > 0 && (episodes.includes(ep) || ranges.some(([from, to]) => ep >= from && ep <= to)))
-                })
-                return this.torrentSliceToAnimeTorrentSlice(filteredTorrents, false, media)
-            }
-        }
-        return this.torrentSliceToAnimeTorrentSlice(atTorrents, false, media)
+        return uniqueTorrents
     }
     public async getTorrentInfoHash(torrent: AnimeTorrent): Promise<string> {
         // InfoHash is provided directly by the API
