@@ -8,6 +8,7 @@ interface AnimeToshoTorrent {
     anidex_id: number | null;
     article_title: string;
     article_url: string;
+    is_seadex?: boolean;
     id: number;
     info_hash: string;
     info_hash_v2: string | null;
@@ -39,7 +40,7 @@ class Provider {
         return {
             type: "main",
             canSmartSearch: true,
-            smartSearchFilters: ["batch", "episodeNumber", "resolution", "query"],
+            smartSearchFilters: ["batch", "episodeNumber", "resolution", "query", "bestReleases"],
             supportsAdult: false,
         }
     }
@@ -130,7 +131,7 @@ class Provider {
 
     public async smartSearch(options: AnimeSmartSearchOptions): Promise<AnimeTorrent[]> {
         try {
-            if (options.batch) {
+            if (options.bestReleases || options.batch) {
                 console.log("AnimeTosho (NEW): Smart searching for batches...")
                 return this.smartSearchBatch(options)
             }
@@ -154,7 +155,9 @@ class Provider {
             try {
                 const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getBatchSearchOrder())
 
-                atTorrents = torrents.filter(t => this.isBatchCandidate(t, media))
+                atTorrents = torrents
+                    .filter(t => !options.bestReleases || t.is_seadex === true)
+                    .filter(t => this.isBatchCandidate(t, media))
 
                 if (atTorrents.length > 0) {
                     foundByID = true
@@ -176,7 +179,12 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: this.getBatchSearchOrder() }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({
+                cat: "2020",
+                q: query,
+                limit: 100,
+                order: this.getBatchSearchOrder(),
+            }, this.getMaxPages())
         })
 
         try {
@@ -190,7 +198,9 @@ class Provider {
         }
 
         // Keep confirmed batches and plausible unlabeled packs.
-        allTorrents = allTorrents.filter(t => this.isBatchCandidate(t, media))
+        allTorrents = allTorrents
+            .filter(t => !options.bestReleases || t.is_seadex === true)
+            .filter(t => this.isBatchCandidate(t, media))
 
         // Convert and remove duplicates
         const animeTorrents = this.torrentSliceToAnimeTorrentSlice(allTorrents, false, media)
@@ -258,7 +268,12 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({ cat: "2020", q: query, limit: 100, order: this.getSingleEpisodeSearchOrder() }, this.getMaxPages())
+            return this.fetchTorrentsPaginated({
+                cat: "2020",
+                q: query,
+                limit: 100,
+                order: this.getSingleEpisodeSearchOrder(),
+            }, this.getMaxPages())
         })
 
         try {
@@ -576,6 +591,7 @@ class Provider {
     }
 
     private isBatchTorrent(t: AnimeToshoTorrent, media: Media | null = null): boolean {
+        if (t.is_seadex === true) return true
         const title = this.normalizeTorrentTitle(t.title)
         if (!title) return false
 
@@ -799,7 +815,7 @@ class Provider {
             isBatch: isBatch,
             episodeNumber: episode,
             releaseGroup: metadata.release_group || "",
-            isBestRelease: false,
+            isBestRelease: t.is_seadex === true,
             confirmed: false,     // Will be set in torrentSliceToAnimeTorrentSlice
         }
     }
