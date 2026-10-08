@@ -153,7 +153,13 @@ class Provider {
         if (options.anidbAID && options.anidbAID > 0) {
             console.log(`AnimeTosho (NEW): Searching batches by AID ${options.anidbAID}`)
             try {
-                const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getBatchSearchOrder())
+                const torrents = await this.searchByAID(
+                    options.anidbAID,
+                    options.query,
+                    options.resolution || "",
+                    this.getBatchSearchOrder(),
+                    options.bestReleases,
+                )
 
                 atTorrents = torrents
                     .filter(t => !options.bestReleases || t.is_seadex === true)
@@ -184,6 +190,7 @@ class Provider {
                 q: query,
                 limit: 100,
                 order: this.getBatchSearchOrder(),
+                hq: options.bestReleases ? 1 : undefined,
             }, this.getMaxPages())
         })
 
@@ -377,7 +384,7 @@ class Provider {
         return results
     }
 
-    private searchByAID(aid: number, query: string, quality: string, order: string): Promise<AnimeToshoTorrent[]> {
+    private searchByAID(aid: number, query: string, quality: string, order: string, bestReleases: boolean = false): Promise<AnimeToshoTorrent[]> {
         const res = this.formatQuality(quality)
         const q = query ? this.sanitizeTitle(query) : ""
         const qCombined = [q, res].filter(Boolean).join(" ").trim()
@@ -388,6 +395,7 @@ class Provider {
             q: qCombined,
             order,
             limit: 100,
+            hq: bestReleases ? 1 : undefined,
         }, this.getMaxPages())
     }
 
