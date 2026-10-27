@@ -1,5 +1,5 @@
-/// <reference path="./anime-torrent-provider.d.ts" />
-/// <reference path="./core.d.ts" />
+/// <reference path="./types/anime-torrent-provider.d.ts" />
+/// <reference path="./types/core.d.ts" />
 
 interface AnimeToshoTorrent {
     anidb_aid: number;
@@ -185,13 +185,12 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({
+            return this.fetchSmartSearchQuery({
                 cat: "2020",
-                q: query,
                 limit: 100,
                 order: this.getBatchSearchOrder(),
                 hq: options.bestReleases ? 1 : undefined,
-            }, this.getMaxPages())
+            }, options, query)
         })
 
         try {
@@ -204,7 +203,7 @@ class Provider {
             throw e
         }
 
-        // Keep confirmed batches and plausible unlabeled packs.
+        // Keep confirmed batches and plausible unlabeled packs
         allTorrents = allTorrents
             .filter(t => !options.bestReleases || t.is_seadex === true)
             .filter(t => this.isBatchCandidate(t, media))
@@ -226,7 +225,7 @@ class Provider {
             console.log(`AnimeTosho (NEW): Searching episode by EID ${options.anidbEID}`)
             try {
                 const torrents = await this.searchByEID(options.anidbEID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
-                // Keep single episodes even when subtitles or other sidecar files are included.
+                // Keep single episodes even when subtitles or other sidecar files are included
                 atTorrents = torrents.filter(t => !this.isBatchTorrent(t, media))
 
                 if (atTorrents.length > 0) {
@@ -247,8 +246,9 @@ class Provider {
             console.log(`AnimeTosho (NEW): Fallback: Searching episode by AID ${options.anidbAID}`)
             try {
                 const torrents = await this.searchByAID(options.anidbAID, options.query, options.resolution || "", this.getSingleEpisodeSearchOrder())
-                // Habari lists both range endpoints and discrete episodes; only title ranges
-                // justify including intervening episodes. Also accept absolute season numbering.
+                // Habari lists both range endpoints and discrete episodes
+                // Only title ranges justify including intervening episodes
+                // Also accept absolute season numbering
                 const wanted = [options.episodeNumber]
                 if (media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
                     wanted.push(options.episodeNumber + media.absoluteSeasonOffset)
@@ -275,12 +275,11 @@ class Provider {
         let allTorrents: AnimeToshoTorrent[] = []
 
         const searchPromises = queries.map(query => {
-            return this.fetchTorrentsPaginated({
+            return this.fetchSmartSearchQuery({
                 cat: "2020",
-                q: query,
                 limit: 100,
                 order: this.getSingleEpisodeSearchOrder(),
-            }, this.getMaxPages())
+            }, options, query)
         })
 
         try {
@@ -293,7 +292,7 @@ class Provider {
             throw e
         }
 
-        // Use the same classification for EID, query and displayed results.
+        // Use the same classification for EID, query and displayed results
         allTorrents = allTorrents.filter(t => !this.isBatchTorrent(t, media))
 
         // Convert and remove duplicates
@@ -320,11 +319,33 @@ class Provider {
     private async fetchTorrents(url: string): Promise<AnimeToshoTorrent[]> {
         console.log(`AnimeTosho (NEW): Fetching from ${url}`)
 
-        // Fetch timeout is in seconds; bound the wait before failover.
+        // Fetch timeout is in seconds; bound the wait before failover
         const res = await fetch(url, { timeout: 20 })
-        if (!res.ok) throw new Error(`Failed to fetch torrents: ${res.status} ${res.statusText}`)
+        if (!res.ok) {
+            // If the response is not OK, try to parse the error message from the response body
+            const errorResponseText = res.text()
+            const requestErrorMessage = `Failed to fetch torrents: ${res.status} ${res.statusText}${errorResponseText ? `: ${errorResponseText}` : ""}`
+            let apiErrorCode: unknown
+            try {
+                const parsedErrorResponse: unknown = JSON.parse(errorResponseText)
+                // Check if the parsed response has the expected structure for an error response
+                if (typeof parsedErrorResponse === "object" && parsedErrorResponse !== null &&
+                    "ok" in parsedErrorResponse && parsedErrorResponse.ok === false &&
+                    "error" in parsedErrorResponse && typeof parsedErrorResponse.error === "object" &&
+                    parsedErrorResponse.error !== null && "code" in parsedErrorResponse.error) {
+                    apiErrorCode = parsedErrorResponse.error.code
+                }
+            }
+            catch (parseError) {
+                if (!(parseError instanceof SyntaxError)) throw parseError
+            }
+            if (apiErrorCode === "query_too_long") {
+                throw Object.assign(new Error(requestErrorMessage), { code: apiErrorCode })
+            }
+            throw new Error(requestErrorMessage)
+        }
 
-        const response = await res.json() as any
+        const response = res.json() as any
         if (!Array.isArray(response) || response.some(t => !t || typeof t.title !== "string")) {
             throw new Error("Invalid feed response: expected an array of torrents")
         }
@@ -359,10 +380,15 @@ class Provider {
                     break
                 }
                 catch (error) {
+                    // If the error is a query-too-long error, stop feed failover and throw the error immediately
+                    if (this.isQueryTooLongError(error)) throw error
+                    
                     const reason = error instanceof Error ? error.message : String(error)
                     failures.push(`${feedIndex === 0 ? "Primary" : "Fallback"} feed: ${reason}`)
                     feedIndex++
-                    if (feedIndex >= feedUrls.length) throw new Error(failures.join("; "))
+                    if (feedIndex >= feedUrls.length) {
+                        throw new Error(failures.join("; "))
+                    }
                     console.warn(`AnimeTosho (NEW): Primary feed failed; retrying page ${page} with the fallback feed`)
                 }
             }
@@ -382,6 +408,33 @@ class Provider {
         }
 
         return results
+    }
+
+    private isQueryTooLongError(error: unknown): error is { code: "query_too_long" } {
+        return typeof error === "object" && error !== null && "code" in error && error.code === "query_too_long"
+    }
+
+    private async fetchSmartSearchQuery(
+        params: Record<string, string | number | boolean | undefined>,
+        options: AnimeSmartSearchOptions,
+        query: string,
+    ): Promise<AnimeToshoTorrent[]> {
+        try {
+            return await this.fetchTorrentsPaginated({ ...params, q: query }, this.getMaxPages())
+        }
+        catch (error) {
+            // If the error is not a query-too-long error, rethrow it.
+            if (!this.isQueryTooLongError(error)) throw error
+
+            const fallbackQueries = this.buildSmartSearchFallbackQueries(options).filter(q => q !== query)
+            if (fallbackQueries.length === 0) throw error
+
+            console.warn("AnimeTosho (NEW): Search query was too long; retrying with shorter title queries")
+            const results = await Promise.all(fallbackQueries.map(q =>
+                this.fetchTorrentsPaginated({ ...params, q }, this.getMaxPages()),
+            ))
+            return results.flat()
+        }
     }
 
     private searchByAID(aid: number, query: string, quality: string, order: string, bestReleases: boolean = false): Promise<AnimeToshoTorrent[]> {
@@ -496,6 +549,48 @@ class Provider {
         for (const q of queryStr) finalQueries.push(q)
 
         return finalQueries
+    }
+
+    private buildSmartSearchFallbackQueries(opts: AnimeSmartSearchOptions): string[] {
+        const { media, batch, episodeNumber, resolution } = opts
+        const userQuery = this.sanitizeTitle(opts.query)
+        const quality = resolution ? this.formatQuality(resolution) : ""
+        const episode = batch || episodeNumber === -1 ? "" : this.buildEpisodeString(opts)
+        const titleAlternatives = media.episodeCount === 1 || media.format === "MOVIE"
+            ? this.getAllTitles(media).map(title => `"${this.sanitizeTitle(title)}"`)
+            : batch
+                ? [media.romajiTitle, media.englishTitle].filter(Boolean).map(title => `(${title})`)
+                : this.buildTitleAlternatives(opts)
+        const titleQueries = titleAlternatives.map(title => ({ title, episode }))
+
+        if (!batch && media.absoluteSeasonOffset && media.absoluteSeasonOffset > 0) {
+            const title = $habari.parse(media.romajiTitle || "").title
+            const absoluteEpisode = episodeNumber + media.absoluteSeasonOffset
+            if (title) {
+                titleQueries.unshift({
+                    title: `"${this.sanitizeTitle(title)}"`,
+                    episode: `("${absoluteEpisode}"|"e${absoluteEpisode}"|"ep${absoluteEpisode}"|"${this.zeropad(absoluteEpisode)}")`,
+                })
+            }
+        }
+
+        const fallbackQueries: string[] = []
+        const seen = new Set<string>()
+        for (const { title, episode: titleEpisode } of titleQueries) {
+            const termVariants = titleEpisode
+                ? [[userQuery, titleEpisode, quality], [titleEpisode, quality], [titleEpisode]]
+                : [[userQuery, quality], [quality], []]
+            for (const terms of termVariants) {
+                const query = [title, ...terms].filter(Boolean).join(" ").trim()
+                if (query.length <= 200 && query && !seen.has(query)) {
+                    seen.add(query)
+                    fallbackQueries.push(query)
+                    break
+                }
+            }
+        }
+
+        return fallbackQueries
     }
 
     private formatQuality(quality: string): string {
@@ -687,6 +782,10 @@ class Provider {
     }
 
     private buildTitleString(opts: AnimeSmartSearchOptions): string {
+        return `(${this.buildTitleAlternatives(opts).join(" | ")})`
+    }
+
+    private buildTitleAlternatives(opts: AnimeSmartSearchOptions): string[] {
         const media = opts.media
         const romTitle = this.sanitizeTitle(media.romajiTitle || "")
         const engTitle = this.sanitizeTitle(media.englishTitle || "")
@@ -754,11 +853,10 @@ class Provider {
             ].join(" | ")
         }
 
-        let qTitles = `(${titles.map(t => `"${t}"`).join(" | ")}`
+        const qTitles = titles.map(t => `"${t}"`)
         if (seasonBuff) {
-            qTitles += ` | ${seasonBuff}`
+            qTitles.push(...seasonBuff.split(" | "))
         }
-        qTitles += ")"
 
         return qTitles
     }

@@ -1,6 +1,7 @@
 .gitignore
 *.d.ts
 tests
+types
 package.json
 package-lock.json
 node_modules
